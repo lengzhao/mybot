@@ -1,0 +1,19 @@
+system:
+  trace_enabled: true
+
+adapters:
+  - id: "console_1"
+    type: "console"
+    enabled: true
+
+  - id: "echo_service"
+    type: "echo"
+    enabled: true
+
+  - id: "deepseek_chat"
+    type: "deepseek"
+    enabled: false
+    config:
+      api_key: "YOUR_DEEPSEEK_API_KEY"
+      model: "deepseek-chat"
+      # base_url: "https://api.deepseek.com/v1"
