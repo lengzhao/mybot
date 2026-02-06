@@ -1,6 +1,7 @@
 system:
   trace_enabled: true
-  # work_dir: "."  # 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}，不存在会自动创建
+  # work_dir: "."           # 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
+  default_adapter: "deepseek_chat"  # 路由兜底：无 Target 且无 Tags（或标签无匹配）时投递到该 adapter
 
 adapters:
   - id: "console_1"

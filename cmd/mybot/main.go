@@ -27,6 +27,9 @@ func main() {
 
 	// 2. 创建调度器
 	dispatcher := mybot.NewDispatcher()
+	if cfg.System.DefaultAdapter != "" {
+		dispatcher.SetDefaultAdapter(cfg.System.DefaultAdapter)
+	}
 
 	workDir := cfg.System.WorkDir
 	if workDir == "" {

@@ -3,29 +3,40 @@ package mybot
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 )
 
-// Dispatcher 核心路由分发器
+// Dispatcher 核心路由分发器：管理适配器生命周期，按 TargetAdapter / Tags / 默认 优先级路由消息
 type Dispatcher struct {
-	adapters map[string]Adapter
-	inbound  chan Message
+	adapters        map[string]Adapter
+	tagIndex        map[string][]string   // tag -> adapter IDs，用于标签快速匹配
+	defaultAdapter  string                // 无 Target 且无 Tags 或标签无匹配时的兜底适配器 ID
+	inbound         chan Message
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	mu     sync.RWMutex
 }
 
-// NewDispatcher 创建一个新的调度器
+// NewDispatcher 创建调度器
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
 		adapters: make(map[string]Adapter),
+		tagIndex: make(map[string][]string),
 		inbound:  make(chan Message, 100),
 	}
 }
 
-// Register 注册适配器
+// SetDefaultAdapter 设置默认兜底适配器 ID（无 P2P 且标签无匹配时投递）
+func (d *Dispatcher) SetDefaultAdapter(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.defaultAdapter = id
+}
+
+// Register 注册适配器并更新 tagIndex
 func (d *Dispatcher) Register(adapter Adapter) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -36,10 +47,13 @@ func (d *Dispatcher) Register(adapter Adapter) error {
 	}
 
 	d.adapters[id] = adapter
+	for _, tag := range adapter.GetTags() {
+		d.tagIndex[tag] = append(d.tagIndex[tag], id)
+	}
 	return nil
 }
 
-// Unregister 注销适配器
+// Unregister 注销适配器并重建 tagIndex
 func (d *Dispatcher) Unregister(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -49,7 +63,17 @@ func (d *Dispatcher) Unregister(id string) error {
 	}
 
 	delete(d.adapters, id)
+	d.rebuildTagIndex()
 	return nil
+}
+
+func (d *Dispatcher) rebuildTagIndex() {
+	d.tagIndex = make(map[string][]string)
+	for id, adapter := range d.adapters {
+		for _, tag := range adapter.GetTags() {
+			d.tagIndex[tag] = append(d.tagIndex[tag], id)
+		}
+	}
 }
 
 // Start 启动调度器主循环
@@ -61,7 +85,7 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	for _, adapter := range d.adapters {
 		go func(a Adapter) {
 			if err := a.Start(d.ctx, d.inbound); err != nil {
-				fmt.Printf("adapter %s failed to start: %v\n", a.GetID(), err)
+				slog.Error("adapter start failed", "adapter", a.GetID(), "err", err)
 			}
 		}(adapter)
 	}
@@ -108,50 +132,75 @@ func (d *Dispatcher) dispatch(msg Message) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	// 1. P2P 路由优先
+	// 1. P2P 投递优先
 	if msg.TargetAdapter != "" {
 		if adapter, ok := d.adapters[msg.TargetAdapter]; ok {
-			_ = adapter.ReceiveMessage(d.ctx, msg)
+			d.deliver(msg, msg.TargetAdapter, adapter)
+		} else {
+			slog.Warn("dispatch P2P target not found", "target", msg.TargetAdapter, "msg_id", msg.ID)
 		}
 		return
 	}
 
-	// 2. 标签路由 (Tag-based Multicast)
+	// 2. 标签路由：匹配「拥有消息全部 Tags」的适配器（tagIndex 交集）
 	if len(msg.Tags) > 0 {
-		for _, adapter := range d.adapters {
-			if d.matchTags(msg.Tags, adapter) {
-				_ = adapter.ReceiveMessage(d.ctx, msg)
-			}
+		ids := d.matchTagIds(msg.Tags)
+		for _, id := range ids {
+			adapter := d.adapters[id]
+			d.deliver(msg, id, adapter)
 		}
 		return
 	}
 
-	// 3. 默认分发 (如果没有 Target 且没有 Tags)
-	// 这里可以定义一个默认的 AI 适配器或日志记录器，暂时不实现具体逻辑
+	// 3. 默认兜底
+	if d.defaultAdapter != "" {
+		if adapter, ok := d.adapters[d.defaultAdapter]; ok {
+			d.deliver(msg, d.defaultAdapter, adapter)
+		} else {
+			slog.Warn("dispatch default adapter not found", "default", d.defaultAdapter, "msg_id", msg.ID)
+		}
+	}
 }
 
-// matchTags 检查适配器是否匹配消息标签
-// 这里的匹配算法可以后续优化，目前简单遍历
-func (d *Dispatcher) matchTags(messageTags []string, adapter Adapter) bool {
-	adapterTags := adapter.GetTags()
-	if len(adapterTags) == 0 {
-		return false
+// matchTagIds 返回同时拥有 msg.Tags 中所有 tag 的适配器 ID 列表（去重）
+func (d *Dispatcher) matchTagIds(messageTags []string) []string {
+	if len(messageTags) == 0 {
+		return nil
 	}
-
-	// 检查消息的所有 Tags 是否都在适配器的标签中 (子集匹配)
-	for _, mTag := range messageTags {
-		found := false
-		for _, aTag := range adapterTags {
-			if mTag == aTag {
-				found = true
-				break
+	var set map[string]int
+	for i, tag := range messageTags {
+		ids := d.tagIndex[tag]
+		if i == 0 {
+			set = make(map[string]int)
+			for _, id := range ids {
+				set[id] = 1
+			}
+			continue
+		}
+		for id := range set {
+			found := false
+			for _, x := range ids {
+				if x == id {
+					found = true
+					break
+				}
+			}
+			if !found {
+				delete(set, id)
 			}
 		}
-		if !found {
-			return false
-		}
 	}
-	return true
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	return out
+}
+
+func (d *Dispatcher) deliver(msg Message, targetID string, adapter Adapter) {
+	if err := adapter.ReceiveMessage(d.ctx, msg); err != nil {
+		slog.Error("dispatch deliver failed", "target", targetID, "msg_id", msg.ID, "err", err)
+	}
 }
 
 // Stop 停止调度器

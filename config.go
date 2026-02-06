@@ -15,8 +15,9 @@ type Config struct {
 
 // SystemConfig 系统全局配置
 type SystemConfig struct {
-	TraceEnabled bool   `yaml:"trace_enabled"`
-	WorkDir      string `yaml:"work_dir"` // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
+	TraceEnabled   bool   `yaml:"trace_enabled"`
+	WorkDir        string `yaml:"work_dir"`         // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
+	DefaultAdapter string `yaml:"default_adapter"` // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
 }
 
 // AdapterConfig 适配器实例配置
