@@ -1,4 +1,4 @@
-package adapters
+package deepseek
 
 import (
 	"bytes"
@@ -28,7 +28,7 @@ func init() {
 			model = "deepseek-chat"
 		}
 
-		return &DeepSeekAdapter{
+		return &Adapter{
 			id:      id,
 			apiKey:  apiKey,
 			baseURL: baseURL,
@@ -38,7 +38,8 @@ func init() {
 	})
 }
 
-type DeepSeekAdapter struct {
+// Adapter DeepSeek 对话适配器
+type Adapter struct {
 	id      string
 	apiKey  string
 	baseURL string
@@ -68,21 +69,20 @@ type deepSeekResponse struct {
 	} `json:"error"`
 }
 
-func (a *DeepSeekAdapter) GetID() string {
+func (a *Adapter) GetID() string {
 	return a.id
 }
 
-func (a *DeepSeekAdapter) GetTags() []string {
+func (a *Adapter) GetTags() []string {
 	return a.tags
 }
 
-func (a *DeepSeekAdapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
+func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
 	a.inbound = inbound
 	return nil
 }
 
-func (a *DeepSeekAdapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
-	// 构造请求
+func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	reqBody := deepSeekRequest{
 		Model: a.model,
 		Messages: []deepSeekMessage{
@@ -133,7 +133,6 @@ func (a *DeepSeekAdapter) ReceiveMessage(ctx context.Context, msg mybot.Message)
 		return fmt.Errorf("deepseek api returned no choices")
 	}
 
-	// 发回响应消息
 	response := mybot.Message{
 		ID:            fmt.Sprintf("ds-%d", time.Now().UnixNano()),
 		SourceAdapter: a.id,
@@ -153,6 +152,6 @@ func (a *DeepSeekAdapter) ReceiveMessage(ctx context.Context, msg mybot.Message)
 	return nil
 }
 
-func (a *DeepSeekAdapter) Status() string {
+func (a *Adapter) Status() string {
 	return "online"
 }

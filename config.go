@@ -2,6 +2,7 @@ package mybot
 
 import (
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,7 +15,8 @@ type Config struct {
 
 // SystemConfig 系统全局配置
 type SystemConfig struct {
-	TraceEnabled bool `yaml:"trace_enabled"`
+	TraceEnabled bool   `yaml:"trace_enabled"`
+	WorkDir      string `yaml:"work_dir"` // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
 }
 
 // AdapterConfig 适配器实例配置
@@ -40,4 +42,18 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// AdapterConfigWithDir 复制 config 并注入 adapter_dir = workDir/adapters/{id}。
+// 各 adapter 可直接使用 config["adapter_dir"] 作为自己的工作目录，不存在时可 os.MkdirAll 创建。
+// workDir 为空时仅复制 config，不注入 adapter_dir。
+func AdapterConfigWithDir(config map[string]interface{}, workDir, id string) map[string]interface{} {
+	out := make(map[string]interface{}, len(config)+1)
+	for k, v := range config {
+		out[k] = v
+	}
+	if workDir != "" {
+		out["adapter_dir"] = filepath.Join(workDir, "adapters", id)
+	}
+	return out
 }

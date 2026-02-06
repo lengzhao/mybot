@@ -1,5 +1,6 @@
 system:
   trace_enabled: true
+  # work_dir: "."  # 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}，不存在会自动创建
 
 adapters:
   - id: "console_1"
@@ -17,3 +18,13 @@ adapters:
       api_key: "YOUR_DEEPSEEK_API_KEY"
       model: "deepseek-chat"
       # base_url: "https://api.deepseek.com/v1"
+
+  # OpenCode 适配器：工作目录默认用 adapter_dir（adapters/opencode_1），可选 workdir 覆盖；不填 base_url 时自启动
+  - id: "opencode_1"
+    type: "opencode"
+    enabled: false
+    config:
+      # workdir: "./custom"  # 可选，不填则用 adapter_dir
+      # base_url: "http://localhost:3000"
+      # opencode_bin: "opencode"
+      # api_key: ""

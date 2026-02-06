@@ -1,4 +1,4 @@
-package adapters
+package echo
 
 import (
 	"context"
@@ -10,43 +10,42 @@ import (
 
 func init() {
 	mybot.RegisterAdapterType("echo", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
-		return NewEchoAdapter(id), nil
+		return NewAdapter(id), nil
 	})
 }
 
-// EchoAdapter 回显适配器 (用于测试)
-type EchoAdapter struct {
+// Adapter 回显适配器 (用于测试)
+type Adapter struct {
 	id      string
 	tags    []string
 	inbound chan<- mybot.Message
 }
 
-func NewEchoAdapter(id string) *EchoAdapter {
-	return &EchoAdapter{
+func NewAdapter(id string) *Adapter {
+	return &Adapter{
 		id:   id,
 		tags: []string{"type:ai", "service:echo"},
 	}
 }
 
-func (e *EchoAdapter) GetID() string {
+func (e *Adapter) GetID() string {
 	return e.id
 }
 
-func (e *EchoAdapter) GetTags() []string {
+func (e *Adapter) GetTags() []string {
 	return e.tags
 }
 
-func (e *EchoAdapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
+func (e *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
 	e.inbound = inbound
 	return nil
 }
 
-func (e *EchoAdapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
-	// 简单的回显逻辑
+func (e *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	response := mybot.Message{
 		ID:            fmt.Sprintf("echo-%d", time.Now().UnixNano()),
 		SourceAdapter: e.id,
-		TargetAdapter: msg.SourceAdapter, // 回复给发送者
+		TargetAdapter: msg.SourceAdapter,
 		Content:       "[Echo] " + msg.Content,
 		Type:          mybot.TypeText,
 		Timestamp:     time.Now().UnixMilli(),
@@ -62,6 +61,6 @@ func (e *EchoAdapter) ReceiveMessage(ctx context.Context, msg mybot.Message) err
 	return nil
 }
 
-func (e *EchoAdapter) Status() string {
+func (e *Adapter) Status() string {
 	return "online"
 }

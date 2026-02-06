@@ -1,4 +1,4 @@
-package adapters
+package console
 
 import (
 	"bufio"
@@ -12,32 +12,32 @@ import (
 
 func init() {
 	mybot.RegisterAdapterType("console", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
-		return NewConsoleAdapter(id), nil
+		return NewAdapter(id), nil
 	})
 }
 
-// ConsoleAdapter 终端适配器
-type ConsoleAdapter struct {
+// Adapter 终端适配器
+type Adapter struct {
 	id   string
 	tags []string
 }
 
-func NewConsoleAdapter(id string) *ConsoleAdapter {
-	return &ConsoleAdapter{
+func NewAdapter(id string) *Adapter {
+	return &Adapter{
 		id:   id,
 		tags: []string{"platform:console", "type:terminal"},
 	}
 }
 
-func (c *ConsoleAdapter) GetID() string {
+func (c *Adapter) GetID() string {
 	return c.id
 }
 
-func (c *ConsoleAdapter) GetTags() []string {
+func (c *Adapter) GetTags() []string {
 	return c.tags
 }
 
-func (c *ConsoleAdapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
+func (c *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
 	fmt.Printf("[ConsoleAdapter:%s] Started. Type message and press Enter.\n", c.id)
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -71,12 +71,12 @@ func (c *ConsoleAdapter) Start(ctx context.Context, inbound chan<- mybot.Message
 	return nil
 }
 
-func (c *ConsoleAdapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
+func (c *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	fmt.Printf("\n[ConsoleAdapter:%s] Received from %s: %s\n", c.id, msg.SourceAdapter, msg.Content)
-	fmt.Print("> ") // 重新打印提示符
+	fmt.Print("> ")
 	return nil
 }
 
-func (c *ConsoleAdapter) Status() string {
+func (c *Adapter) Status() string {
 	return "running"
 }
