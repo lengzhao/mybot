@@ -2,6 +2,7 @@ package mybot
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -34,6 +35,7 @@ func CreateAdapter(typeName string, id string, config map[string]interface{}) (A
 	if !ok {
 		return nil, fmt.Errorf("unknown adapter type: %s", typeName)
 	}
+	slog.Debug("Creating adapter", "type", typeName, "id", id, "config", config)
 	return factory(id, config)
 }
 

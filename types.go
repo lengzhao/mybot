@@ -26,10 +26,9 @@ type File struct {
 
 // Message 统一消息模型
 type Message struct {
-	ID            string   `json:"id"`             // 消息唯一标识
-	SourceAdapter string   `json:"source_adapter"` // 来源适配器 ID
-	TargetAdapter string   `json:"target_adapter"` // 目标适配器 ID (可选，P2P 路由)
-	Tags          []string `json:"tags"`           // 标签列表 (可选，用于分组路由)
+	ID            string `json:"id"`             // 消息唯一标识
+	SourceAdapter string `json:"source_adapter"` // 来源适配器 ID
+	TargetAdapter string `json:"target_adapter"` // 目标适配器 ID (可选，P2P 路由)
 
 	// 核心业务上下文
 	UserID  string `json:"user_id"` // 发送者唯一 ID
@@ -49,9 +48,6 @@ type Message struct {
 type Adapter interface {
 	// GetID 注册标识符
 	GetID() string
-
-	// GetTags 返回该适配器的属性标签 (用于标签路由)
-	GetTags() []string
 
 	// GetDefaultTarget 返回该适配器的默认目标适配器ID
 	GetDefaultTarget() string

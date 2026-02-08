@@ -5,6 +5,7 @@
 - [x] 实现基础能力适配器 (如 Mock AI 或 Console) @complete
 - [x] 实现 DeepSeek LLM 适配器 @complete
 - [x] 编写单元测试验证路由逻辑 @complete
+- [x] 补充完整的 dispatcher.go 测试用例 @complete
 - [x] 修复 mockAdapter 缺少 GetDefaultTarget 方法导致的编译错误 @complete
 - [x] 实现适配器默认路由配置功能 @complete
 - [ ] 实现各平台 SDK 适配器 (Lark, DingTalk 等) @pending

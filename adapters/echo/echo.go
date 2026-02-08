@@ -3,6 +3,7 @@ package echo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/lengzhao/mybot"
@@ -17,26 +18,22 @@ func init() {
 // Adapter 回显适配器 (用于测试)
 type Adapter struct {
 	id            string
-	tags          []string
 	defaultTarget string
 	inbound       chan<- mybot.Message
 }
 
 func NewAdapter(id string, config map[string]interface{}) *Adapter {
+	slog.Debug("Creating Echo Adapter", "id", id, "config", config)
+
 	defaultTarget, _ := config["default_target"].(string)
 	return &Adapter{
 		id:            id,
-		tags:          []string{"type:ai", "service:echo"},
 		defaultTarget: defaultTarget,
 	}
 }
 
 func (e *Adapter) GetID() string {
 	return e.id
-}
-
-func (e *Adapter) GetTags() []string {
-	return e.tags
 }
 
 func (e *Adapter) GetDefaultTarget() string {

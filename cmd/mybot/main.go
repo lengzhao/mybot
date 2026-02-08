@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +19,7 @@ func main() {
 	if len(os.Args) > 1 {
 		configPath = os.Args[1]
 	}
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	cfg, err := mybot.LoadConfig(configPath)
 	if err != nil {
@@ -41,22 +43,29 @@ func main() {
 
 	// 3. 根据配置实例化并注册适配器
 	for _, aCfg := range cfg.Adapters {
-		if !aCfg.Enabled {
+		// 从 map 中获取必要字段
+		enabled, _ := aCfg["enabled"].(bool)
+		if !enabled {
 			continue
 		}
 
-		adapterConfig := mybot.AdapterConfigWithDir(aCfg.Config, workDir, aCfg.ID)
-		adapter, err := mybot.CreateAdapter(aCfg.Type, aCfg.ID, adapterConfig)
+		id, _ := aCfg["id"].(string)
+		adapterType, _ := aCfg["type"].(string)
+
+		// 将 DefaultTarget 添加到适配器配置中
+		adapterConfig := mybot.AdapterConfigWithDir(aCfg, workDir, id)
+
+		adapter, err := mybot.CreateAdapter(adapterType, id, adapterConfig)
 		if err != nil {
-			fmt.Printf("Failed to create adapter [%s] of type [%s]: %v\n", aCfg.ID, aCfg.Type, err)
+			fmt.Printf("Failed to create adapter [%s] of type [%s]: %v\n", id, adapterType, err)
 			continue
 		}
 
 		if err := dispatcher.Register(adapter); err != nil {
-			fmt.Printf("Failed to register adapter [%s]: %v\n", aCfg.ID, err)
+			fmt.Printf("Failed to register adapter [%s]: %v\n", id, err)
 			continue
 		}
-		fmt.Printf("Registered adapter: %s (%s)\n", aCfg.ID, aCfg.Type)
+		slog.Debug("Registered adapter", "id", id, "type", adapterType)
 	}
 
 	// 4. 启动调度器
@@ -68,7 +77,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("MuseBot started. Press Ctrl+C to exit.")
+	fmt.Println("Mybot started. Press Ctrl+C to exit.")
 
 	// 5. 等待信号退出
 	sigCh := make(chan os.Signal, 1)

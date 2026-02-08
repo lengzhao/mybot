@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 func init() {
 	mybot.RegisterAdapterType("deepseek", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
+		slog.Debug("Creating DeepSeek Adapter", "id", id, "config", config)
 		apiKey, _ := config["api_key"].(string)
 		baseURL, _ := config["base_url"].(string)
 		model, _ := config["model"].(string)
@@ -34,7 +36,6 @@ func init() {
 			apiKey:        apiKey,
 			baseURL:       baseURL,
 			model:         model,
-			tags:          []string{"type:ai", "service:deepseek"},
 			defaultTarget: defaultTarget,
 		}, nil
 	})
@@ -46,7 +47,6 @@ type Adapter struct {
 	apiKey        string
 	baseURL       string
 	model         string
-	tags          []string
 	defaultTarget string
 	inbound       chan<- mybot.Message
 }
@@ -74,10 +74,6 @@ type deepSeekResponse struct {
 
 func (a *Adapter) GetID() string {
 	return a.id
-}
-
-func (a *Adapter) GetTags() []string {
-	return a.tags
 }
 
 func (a *Adapter) GetDefaultTarget() string {

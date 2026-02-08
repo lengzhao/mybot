@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +22,7 @@ const uploadsDir = "uploads"
 
 func init() {
 	mybot.RegisterAdapterType("opencode", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
+		slog.Debug("Creating OpenCode Adapter", "id", id, "config", config)
 		baseURL, _ := config["base_url"].(string)
 		workdir, _ := config["workdir"].(string)
 		if workdir == "" {
@@ -49,7 +51,6 @@ func init() {
 			directory:     workdir,
 			apiKey:        apiKey,
 			opencodeBin:   bin,
-			tags:          []string{"type:ai", "service:opencode"},
 			defaultTarget: defaultTarget,
 			sessions:      make(map[string]string),
 		}, nil
@@ -63,7 +64,6 @@ type Adapter struct {
 	directory     string
 	apiKey        string
 	opencodeBin   string
-	tags          []string
 	defaultTarget string
 	inbound       chan<- mybot.Message
 	mu            sync.RWMutex
@@ -73,10 +73,6 @@ type Adapter struct {
 
 func (a *Adapter) GetID() string {
 	return a.id
-}
-
-func (a *Adapter) GetTags() []string {
-	return a.tags
 }
 
 func (a *Adapter) GetDefaultTarget() string {
@@ -106,18 +102,22 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	sessionID, err := a.getOrCreateSession(ctx, msg.Channel)
 	if err != nil {
+		slog.Error("Failed to get or create session", "channel", msg.Channel, "err", err)
 		return err
 	}
 
 	files, err := a.ensureFilesInDirectory(ctx, msg.Channel, msg.Files)
 	if err != nil {
+		slog.Error("Failed to ensure files in directory", "channel", msg.Channel, "err", err)
 		return err
 	}
 	parts := a.buildParts(msg.Content, files)
 	resp, err := a.prompt(ctx, sessionID, parts)
 	if err != nil {
+		slog.Error("Failed to get response from OpenCode", "channel", msg.Channel, "err", err)
 		return err
 	}
+	slog.Debug("Received response from OpenCode", "channel", msg.Channel, "response", resp)
 
 	content := a.collectTextParts(resp.Parts)
 
@@ -393,6 +393,7 @@ func (a *Adapter) prompt(ctx context.Context, sessionID string, parts []map[stri
 	body := map[string]interface{}{"parts": parts}
 	reqBody, err := json.Marshal(body)
 	if err != nil {
+		slog.Error("Failed to marshal request body", "err", err)
 		return nil, err
 	}
 
@@ -402,6 +403,7 @@ func (a *Adapter) prompt(ctx context.Context, sessionID string, parts []map[stri
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(reqBody))
 	if err != nil {
+		slog.Error("Failed to create request", "err", err)
 		return nil, err
 	}
 	a.setAuth(req)
@@ -410,19 +412,23 @@ func (a *Adapter) prompt(ctx context.Context, sessionID string, parts []map[stri
 	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Error("Failed to get response from OpenCode", "err", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
+		slog.Error("Failed to get response from OpenCode", "status_code", resp.StatusCode, "body", string(b))
 		return nil, fmt.Errorf("opencode prompt: %d %s", resp.StatusCode, string(b))
 	}
 
 	var out promptResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		slog.Error("Failed to decode response body", "err", err)
 		return nil, err
 	}
+	slog.Debug("Received response from OpenCode", "response", out)
 	return &out, nil
 }
 

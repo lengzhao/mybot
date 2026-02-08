@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -19,25 +20,20 @@ func init() {
 // Adapter 终端适配器
 type Adapter struct {
 	id            string
-	tags          []string
 	defaultTarget string
 }
 
 func NewAdapter(id string, config map[string]interface{}) *Adapter {
+	slog.Debug("Creating Console Adapter", "id", id, "config", config)
 	defaultTarget, _ := config["default_target"].(string)
 	return &Adapter{
 		id:            id,
-		tags:          []string{"platform:console", "type:terminal"},
 		defaultTarget: defaultTarget,
 	}
 }
 
 func (c *Adapter) GetID() string {
 	return c.id
-}
-
-func (c *Adapter) GetTags() []string {
-	return c.tags
 }
 
 func (c *Adapter) GetDefaultTarget() string {
@@ -63,6 +59,7 @@ func (c *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 					msg := mybot.Message{
 						ID:            fmt.Sprintf("console-%d", time.Now().UnixNano()),
 						SourceAdapter: c.id,
+						TargetAdapter: c.defaultTarget,
 						Content:       text,
 						Type:          mybot.TypeText,
 						Timestamp:     time.Now().UnixMilli(),

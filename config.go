@@ -1,6 +1,7 @@
 package mybot
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -21,13 +22,8 @@ type SystemConfig struct {
 }
 
 // AdapterConfig 适配器实例配置
-type AdapterConfig struct {
-	ID            string                 `yaml:"id"`
-	Type          string                 `yaml:"type"`
-	Enabled       bool                   `yaml:"enabled"`
-	DefaultTarget string                 `yaml:"default_target,omitempty"` // 默认目标适配器ID
-	Config        map[string]interface{} `yaml:"config"`
-}
+// 使用 map[string]interface{} 以支持灵活的配置结构
+type AdapterConfig map[string]interface{}
 
 // LoadConfig 从指定路径加载 YAML 配置文件
 func LoadConfig(path string) (*Config, error) {
@@ -42,6 +38,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, err
 	}
+	slog.Debug("Loaded config", "config", cfg)
 
 	return &cfg, nil
 }
