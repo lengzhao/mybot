@@ -14,6 +14,67 @@ const (
 	TypeCommand MessageType = "command"
 )
 
+// StateStore 状态存储接口
+type StateStore interface {
+	// RecordMessage 记录消息
+	RecordMessage(msg Message) error
+
+	// QueryMessages 查询消息历史
+	QueryMessages(filter MessageFilter) ([]MessageRecord, error)
+
+	// GetStats 获取统计信息
+	GetStats() (Stats, error)
+
+	// Start 启动存储服务
+	Start() error
+
+	// Stop 停停止存储服务
+	Stop() error
+}
+
+// MessageRecord 消息记录结构
+type MessageRecord struct {
+	ID            string                 `json:"id" db:"id"`
+	SourceAdapter string                 `json:"source_adapter" db:"source_adapter"`
+	TargetAdapter string                 `json:"target_adapter" db:"target_adapter"`
+	UserID        string                 `json:"user_id" db:"user_id"`
+	Channel       string                 `json:"channel" db:"channel"`
+	Content       string                 `json:"content" db:"content"`
+	Type          MessageType            `json:"type" db:"type"`
+	Timestamp     int64                  `json:"timestamp" db:"timestamp"`
+	Files         []File                 `json:"files" db:"files"`
+	Extra         map[string]interface{} `json:"extra" db:"extra"`
+
+	// 统计字段
+	ProcessedAt int64 `json:"processed_at" db:"processed_at"` // 处理时间
+}
+
+// MessageFilter 消息查询过滤器
+type MessageFilter struct {
+	SourceAdapter string `json:"source_adapter"`
+	TargetAdapter string `json:"target_adapter"`
+	UserID        string `json:"user_id"`
+	Channel       string `json:"channel"`
+	Type          string `json:"type"`
+
+	// 时间范围
+	StartTime int64 `json:"start_time"`
+	EndTime   int64 `json:"end_time"`
+
+	// 分页
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+// Stats 统计信息
+type Stats struct {
+	TotalMessages     int64            `json:"total_messages"`
+	MessagesByAdapter map[string]int64 `json:"messages_by_adapter"`
+	MessagesByUser    map[string]int64 `json:"messages_by_user"`
+	MessagesByChannel map[string]int64 `json:"messages_by_channel"`
+	MessagesByType    map[string]int64 `json:"messages_by_type"`
+}
+
 // File 消息附件
 // 约定：Message 中的 Files 默认应存于「处理该消息的 adapter 的 directory」下；
 // 能处理文件的 adapter 在接收消息时，应先把附件转存到自己的工作目录再处理。

@@ -12,6 +12,7 @@ type Dispatcher struct {
 	adapters       map[string]Adapter
 	defaultAdapter string // 无 Target 时的兜底适配器 ID
 	inbound        chan Message
+	stateStore     StateStore // 状态存储
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -102,6 +103,13 @@ func (d *Dispatcher) dispatch(msg Message) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	// 记录消息到状态存储
+	if d.stateStore != nil {
+		if err := d.stateStore.RecordMessage(msg); err != nil {
+			slog.Error("failed to record message to state store", "err", err, "msg_id", msg.ID)
+		}
+	}
+
 	// 1. P2P 投递优先
 	if msg.TargetAdapter != "" {
 		if adapter, ok := d.adapters[msg.TargetAdapter]; ok {
@@ -128,9 +136,26 @@ func (d *Dispatcher) deliver(msg Message, targetID string, adapter Adapter) {
 	}
 }
 
+// SetStateStore 设置状态存储
+func (d *Dispatcher) SetStateStore(store StateStore) {
+	d.stateStore = store
+}
+
+// GetStateStore 获取状态存储
+func (d *Dispatcher) GetStateStore() StateStore {
+	return d.stateStore
+}
+
 // Stop 停止调度器
 func (d *Dispatcher) Stop() {
 	if d.cancel != nil {
 		d.cancel()
+	}
+
+	// 停止状态存储
+	if d.stateStore != nil {
+		if err := d.stateStore.Stop(); err != nil {
+			slog.Error("failed to stop state store", "err", err)
+		}
 	}
 }

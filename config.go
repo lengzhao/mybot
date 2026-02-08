@@ -16,9 +16,25 @@ type Config struct {
 
 // SystemConfig 系统全局配置
 type SystemConfig struct {
-	TraceEnabled   bool   `yaml:"trace_enabled"`
-	WorkDir        string `yaml:"work_dir"`        // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
-	DefaultAdapter string `yaml:"default_adapter"` // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
+	TraceEnabled   bool             `yaml:"trace_enabled"`
+	WorkDir        string           `yaml:"work_dir"`        // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
+	DefaultAdapter string           `yaml:"default_adapter"` // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
+	StateStore     StateStoreConfig `yaml:"state_store"`     // 状态存储配置
+	Admin          AdminConfig      `yaml:"admin"`           // 管理服务配置
+}
+
+// AdminConfig 管理服务配置
+type AdminConfig struct {
+	Enabled bool   `yaml:"enabled"` // 是否启用管理服务
+	Port    string `yaml:"port"`    // 管理服务端口
+}
+
+// StateStoreConfig 状态存储配置
+type StateStoreConfig struct {
+	Enabled     bool   `yaml:"enabled"`      // 是否启用状态存储
+	DBPath      string `yaml:"db_path"`      // 数据库文件路径
+	AutoCleanup bool   `yaml:"auto_cleanup"` // 是否自动清理旧数据
+	CleanupDays int    `yaml:"cleanup_days"` // 自动清理多少天前的数据
 }
 
 // AdapterConfig 适配器实例配置

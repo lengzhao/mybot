@@ -12,6 +12,6 @@
 - [ ] 实现各平台 SDK 适配器 (Lark, DingTalk 等) @pending
 - [x] 重构项目结构：引入 adapters 文件夹与自注册机制 @complete
 - [x] 实现配置加载模块 @complete
-- [ ] 实现状态/上下文存储 (StateStore) @pending
+- [x] 实现状态/上下文存储 (StateStore) @complete
 - [x] 改进 opencode 适配器进程管理：移除不当的 kill 逻辑，添加优雅关闭机制 @complete
 

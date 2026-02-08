@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type Adapter struct {
 	port           string
 	server         *http.Server
 	inbound        chan<- mybot.Message
+	stateStore     mybot.StateStore // 状态存储引用
 	messageMutex   sync.RWMutex
 	activeSessions map[string]*Session // 存储活跃会话
 	clients        map[*Client]bool    // WebSocket客户端连接
@@ -97,6 +99,10 @@ func (w *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 	http.HandleFunc("/send", w.handlePostSend)
 	http.HandleFunc("/health", w.handleHealth)
 	http.HandleFunc("/sessions", w.handleListSessions)
+	// StateStore管理API
+	http.HandleFunc("/api/messages", w.handleListMessages)
+	http.HandleFunc("/api/stats", w.handleGetStats)
+	http.HandleFunc("/admin", w.handleAdminPage)
 	// 提供静态文件服务
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFiles))))
 
@@ -473,6 +479,107 @@ func (w *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	}
 
 	return nil
+}
+
+// SetStateStore 设置状态存储引用
+func (w *Adapter) SetStateStore(store mybot.StateStore) {
+	w.stateStore = store
+}
+
+// handleListMessages 处理消息列表查询
+func (w *Adapter) handleListMessages(rw http.ResponseWriter, r *http.Request) {
+	if w.stateStore == nil {
+		http.Error(rw, "StateStore not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// 解析查询参数
+	filter := mybot.MessageFilter{
+		SourceAdapter: r.URL.Query().Get("source_adapter"),
+		TargetAdapter: r.URL.Query().Get("target_adapter"),
+		UserID:        r.URL.Query().Get("user_id"),
+		Channel:       r.URL.Query().Get("channel"),
+		Type:          r.URL.Query().Get("type"),
+	}
+
+	// 解析时间范围
+	if startTime := r.URL.Query().Get("start_time"); startTime != "" {
+		if ts, err := strconv.ParseInt(startTime, 10, 64); err == nil {
+			filter.StartTime = ts
+		}
+	}
+	if endTime := r.URL.Query().Get("end_time"); endTime != "" {
+		if ts, err := strconv.ParseInt(endTime, 10, 64); err == nil {
+			filter.EndTime = ts
+		}
+	}
+
+	// 解析分页参数
+	if limit := r.URL.Query().Get("limit"); limit != "" {
+		if l, err := strconv.Atoi(limit); err == nil && l > 0 {
+			filter.Limit = l
+		}
+	}
+	if offset := r.URL.Query().Get("offset"); offset != "" {
+		if o, err := strconv.Atoi(offset); err == nil && o >= 0 {
+			filter.Offset = o
+		}
+	}
+
+	// 默认限制
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000 // 最大1000条
+	}
+
+	// 查询消息
+	messages, err := w.stateStore.QueryMessages(filter)
+	if err != nil {
+		slog.Error("Failed to query messages", "err", err)
+		http.Error(rw, "Failed to query messages", http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]interface{}{
+		"messages": messages,
+		"count":    len(messages),
+		"filter":   filter,
+	})
+}
+
+// handleGetStats 处理统计信息查询
+func (w *Adapter) handleGetStats(rw http.ResponseWriter, r *http.Request) {
+	if w.stateStore == nil {
+		http.Error(rw, "StateStore not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	stats, err := w.stateStore.GetStats()
+	if err != nil {
+		slog.Error("Failed to get stats", "err", err)
+		http.Error(rw, "Failed to get stats", http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(stats)
+}
+
+// handleAdminPage 处理管理页面
+func (w *Adapter) handleAdminPage(rw http.ResponseWriter, r *http.Request) {
+	adminPageHTML := `<!DOCTYPE html><html><head><meta charset="utf-8"><title>MyBot StateStore 管理页面</title></head>" +
+		"<body><h1>MyBot StateStore 管理面板</h1>" +
+		"<p><a href="/api/stats">查看统计信息</a> | <a href="/api/messages?limit=50">查看最新消息</a></p>" +
+		"<h2>API接口:</h2>" +
+		"<ul><li>GET /api/stats - 获取统计信息</li>" +
+		"<li>GET /api/messages - 查询消息 (支持参数: source_adapter, target_adapter, user_id, channel, type, limit, offset)</li></ul>" +
+		"</body></html>`
+
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.Write([]byte(adminPageHTML))
 }
 
 func (w *Adapter) Status() string {

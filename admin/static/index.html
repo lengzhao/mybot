@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>MyBot StateStore 管理页面</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
+        .stat-value { font-size: 28px; font-weight: bold; color: #007acc; }
+        .stat-label { color: #666; margin-top: 8px; font-size: 14px; }
+        .filters { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .filter-row { display: flex; gap: 15px; margin-bottom: 15px; align-items: center; flex-wrap: wrap; }
+        .filter-row label { width: 100px; font-weight: bold; }
+        input, select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        button { background: #007acc; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        button:hover { background: #005a9e; }
+        .messages { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .message { padding: 15px; border-bottom: 1px solid #eee; }
+        .message:last-child { border-bottom: none; }
+        .message-header { display: flex; justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; gap: 10px; }
+        .message-meta { font-size: 12px; color: #666; }
+        .message-content { margin-top: 10px; color: #333; line-height: 1.5; }
+        .loading { text-align: center; padding: 30px; color: #666; font-size: 16px; }
+        .error { color: #d32f2f; padding: 15px; background: #ffebee; border-radius: 4px; margin: 15px 0; }
+        .actions { text-align: center; padding: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>�� MyBot StateStore 管理面板</h1>
+            <p>消息存储状态监控与管理</p>
+        </div>
+
+        <div class="stats" id="stats-container">
+            <div class="loading">加载统计信息...</div>
+        </div>
+
+        <div class="filters">
+            <h3>🔍 消息查询过滤器</h3>
+            <div class="filter-row">
+                <label>源适配器:</label>
+                <input type="text" id="source-adapter" placeholder="输入适配器ID">
+            </div>
+            <div class="filter-row">
+                <label>目标适配器:</label>
+                <input type="text" id="target-adapter" placeholder="输入适配器ID">
+            </div>
+            <div class="filter-row">
+                <label>用户ID:</label>
+                <input type="text" id="user-id" placeholder="输入用户ID">
+            </div>
+            <div class="filter-row">
+                <label>频道:</label>
+                <input type="text" id="channel" placeholder="输入频道ID">
+            </div>
+            <div class="filter-row">
+                <label>消息类型:</label>
+                <select id="message-type">
+                    <option value="">全部类型</option>
+                    <option value="text">文本</option>
+                    <option value="image">图片</option>
+                    <option value="file">文件</option>
+                    <option value="command">命令</option>
+                </select>
+            </div>
+            <div class="filter-row">
+                <label>时间范围:</label>
+                <input type="datetime-local" id="start-time">
+                <span>到</span>
+                <input type="datetime-local" id="end-time">
+            </div>
+            <div class="filter-row">
+                <button onclick="loadMessages()">🔍 查询消息</button>
+                <button onclick="loadStats()">📊 刷新统计</button>
+                <button onclick="clearFilters()">🗑️ 清除过滤器</button>
+            </div>
+        </div>
+
+        <div class="messages" id="messages-container">
+            <div class="loading">请输入过滤条件并点击查询...</div>
+        </div>
+        
+        <div class="actions">
+            <button onclick="window.location.reload()">🔄 刷新页面</button>
+        </div>
+    </div>
+
+    <script>
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStats();
+        });
+
+        // 加载统计信息
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                if (!response.ok) throw new Error('Failed to load stats: ' + response.status);
+                
+                const stats = await response.json();
+                
+                const statsContainer = document.getElementById('stats-container');
+                statsContainer.innerHTML = 
+                    '<div class="stat-card"><div class="stat-value">' + (stats.total_messages || 0) + '</div><div class="stat-label">总消息数</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_adapter || {}).length + '</div><div class="stat-label">适配器数量</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_user || {}).length + '</div><div class="stat-label">用户数量</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_channel || {}).length + '</div><div class="stat-label">频道数量</div></div>';
+            } catch (error) {
+                document.getElementById('stats-container').innerHTML = 
+                    '<div class="error">加载统计失败: ' + error.message + '</div>';
+            }
+        }
+
+        // 加载消息列表
+        async function loadMessages() {
+            try {
+                const params = new URLSearchParams();
+                
+                const sourceAdapter = document.getElementById('source-adapter').value;
+                const targetAdapter = document.getElementById('target-adapter').value;
+                const userId = document.getElementById('user-id').value;
+                const channel = document.getElementById('channel').value;
+                const messageType = document.getElementById('message-type').value;
+                
+                if (sourceAdapter) params.append('source_adapter', sourceAdapter);
+                if (targetAdapter) params.append('target_adapter', targetAdapter);
+                if (userId) params.append('user_id', userId);
+                if (channel) params.append('channel', channel);
+                if (messageType) params.append('type', messageType);
+                
+                // 时间范围处理
+                const startTime = document.getElementById('start-time').value;
+                const endTime = document.getElementById('end-time').value;
+                if (startTime) {
+                    const startTimestamp = new Date(startTime).getTime();
+                    params.append('start_time', startTimestamp);
+                }
+                if (endTime) {
+                    const endTimestamp = new Date(endTime).getTime();
+                    params.append('end_time', endTimestamp);
+                }
+                
+                params.append('limit', 100);
+                
+                document.getElementById('messages-container').innerHTML = '<div class="loading">🔍 正在加载中...</div>';
+                
+                const response = await fetch('/api/messages?' + params.toString());
+                if (!response.ok) throw new Error('Failed to load messages: ' + response.status);
+                
+                const data = await response.json();
+                
+                if (data.messages && data.messages.length > 0) {
+                    let messagesHtml = '';
+                    data.messages.forEach(function(msg) {
+                        messagesHtml += 
+                            '<div class="message">' +
+                            '    <div class="message-header">' +
+                            '        <div class="message-meta">' +
+                            '            <strong>ID:</strong> ' + msg.id + ' |' +
+                            '            <strong>源:</strong> ' + msg.source_adapter + ' |' +
+                            '            <strong>目标:</strong> ' + (msg.target_adapter || 'default') + ' |' +
+                            '            <strong>用户:</strong> ' + msg.user_id +
+                            '        </div>' +
+                            '        <div class="message-meta">' +
+                            '            ' + new Date(msg.timestamp).toLocaleString() +
+                            '        </div>' +
+                            '    </div>' +
+                            '    <div class="message-meta">' +
+                            '        <strong>频道:</strong> ' + msg.channel + ' |' +
+                            '        <strong>类型:</strong> ' + msg.type +
+                            '    </div>' +
+                            '    <div class="message-content">' +
+                            '        ' + (msg.content ? msg.content.substring(0, 300) + (msg.content.length > 300 ? '...' : '') : '(无内容)') +
+                            '    </div>' +
+                            '</div>';
+                    });
+                    
+                    messagesHtml += '<div style="padding: 15px; text-align: center; color: #666; background: #f9f9f9;">' +
+                        '显示 ' + data.messages.length + ' 条消息 (共 ' + data.count + ' 条匹配记录)' +
+                        '</div>';
+                    document.getElementById('messages-container').innerHTML = messagesHtml;
+                } else {
+                    document.getElementById('messages-container').innerHTML = 
+                        '<div class="loading">📋 未找到匹配的消息</div>';
+                }
+            } catch (error) {
+                document.getElementById('messages-container').innerHTML = 
+                    '<div class="error">❌ 加载消息失败: ' + error.message + '</div>';
+            }
+        }
+
+        // 清除过滤器
+        function clearFilters() {
+            document.getElementById('source-adapter').value = '';
+            document.getElementById('target-adapter').value = '';
+            document.getElementById('user-id').value = '';
+            document.getElementById('channel').value = '';
+            document.getElementById('message-type').value = '';
+            document.getElementById('start-time').value = '';
+            document.getElementById('end-time').value = '';
+            document.getElementById('messages-container').innerHTML = 
+                '<div class="loading">请输入过滤条件并点击查询...</div>';
+        }
+
+        // 健康检查
+        async function healthCheck() {
+            try {
+                const response = await fetch('/health');
+                return response.ok;
+            } catch {
+                return false;
+            }
+        }
+    </script>
+</body>
+</html>
