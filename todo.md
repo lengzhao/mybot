@@ -8,6 +8,7 @@
 - [x] 补充完整的 dispatcher.go 测试用例 @complete
 - [x] 修复 mockAdapter 缺少 GetDefaultTarget 方法导致的编译错误 @complete
 - [x] 实现适配器默认路由配置功能 @complete
+- [x] 实现WebChat适配器 @complete
 - [ ] 实现各平台 SDK 适配器 (Lark, DingTalk 等) @pending
 - [x] 重构项目结构：引入 adapters 文件夹与自注册机制 @complete
 - [x] 实现配置加载模块 @complete

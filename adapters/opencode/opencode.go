@@ -100,6 +100,7 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 }
 
 func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
+	slog.Debug("Received message from OpenCode", "channel", msg.Channel, "content", msg.Content, "files", msg.Files)
 	sessionID, err := a.getOrCreateSession(ctx, msg.Channel)
 	if err != nil {
 		slog.Error("Failed to get or create session", "channel", msg.Channel, "err", err)
