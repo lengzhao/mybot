@@ -1,7 +1,6 @@
 package opencode
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sync"
 	"time"
 
@@ -20,8 +18,6 @@ import (
 )
 
 const uploadsDir = "uploads"
-
-var listenRE = regexp.MustCompile(`opencode server listening on (https?://[^\s]+)`)
 
 func init() {
 	mybot.RegisterAdapterType("opencode", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
@@ -46,30 +42,33 @@ func init() {
 		if bin == "" {
 			bin = "opencode"
 		}
+		defaultTarget, _ := config["default_target"].(string)
 		return &Adapter{
-			id:          id,
-			baseURL:     baseURL,
-			directory:   workdir,
-			apiKey:      apiKey,
-			opencodeBin: bin,
-			tags:        []string{"type:ai", "service:opencode"},
-			sessions:    make(map[string]string),
+			id:            id,
+			baseURL:       baseURL,
+			directory:     workdir,
+			apiKey:        apiKey,
+			opencodeBin:   bin,
+			tags:          []string{"type:ai", "service:opencode"},
+			defaultTarget: defaultTarget,
+			sessions:      make(map[string]string),
 		}, nil
 	})
 }
 
 // Adapter 将消息转发到 OpenCode；无 base_url 时自行启动 opencode 进程，文件落盘到 directory
 type Adapter struct {
-	id          string
-	baseURL     string
-	directory   string
-	apiKey      string
-	opencodeBin string
-	tags        []string
-	inbound     chan<- mybot.Message
-	mu          sync.RWMutex
-	sessions    map[string]string
-	cmd         *exec.Cmd
+	id            string
+	baseURL       string
+	directory     string
+	apiKey        string
+	opencodeBin   string
+	tags          []string
+	defaultTarget string
+	inbound       chan<- mybot.Message
+	mu            sync.RWMutex
+	sessions      map[string]string
+	cmd           *exec.Cmd
 }
 
 func (a *Adapter) GetID() string {
@@ -78,6 +77,10 @@ func (a *Adapter) GetID() string {
 
 func (a *Adapter) GetTags() []string {
 	return a.tags
+}
+
+func (a *Adapter) GetDefaultTarget() string {
+	return a.defaultTarget
 }
 
 func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
@@ -117,10 +120,18 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	}
 
 	content := a.collectTextParts(resp.Parts)
+
+	// 如果消息没有明确的目标适配器，但当前适配器有默认目标，则使用默认目标
+	targetAdapter := msg.SourceAdapter
+	defaultTarget := a.GetDefaultTarget()
+	if defaultTarget != "" {
+		targetAdapter = defaultTarget
+	}
+
 	reply := mybot.Message{
 		ID:            fmt.Sprintf("oc-%d", time.Now().UnixNano()),
 		SourceAdapter: a.id,
-		TargetAdapter: msg.SourceAdapter,
+		TargetAdapter: targetAdapter,
 		Content:       content,
 		Type:          mybot.TypeText,
 		Timestamp:     time.Now().UnixMilli(),
@@ -140,32 +151,94 @@ func (a *Adapter) Status() string {
 	return "online"
 }
 
+// Stop 优雅地关闭 opencode 服务
+func (a *Adapter) Stop() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.cmd != nil && a.cmd.Process != nil {
+		// 发送 SIGTERM 信号优雅关闭
+		if err := a.cmd.Process.Signal(os.Interrupt); err != nil {
+			// 如果发送信号失败，强制 kill
+			_ = a.cmd.Process.Kill()
+		}
+		// 等待进程退出
+		done := make(chan error, 1)
+		go func() {
+			done <- a.cmd.Wait()
+		}()
+
+		select {
+		case <-time.After(10 * time.Second):
+			// 超时后强制 kill
+			_ = a.cmd.Process.Kill()
+		case <-done:
+			// 正常退出
+		}
+		a.cmd = nil
+	}
+	return nil
+}
+
 func startOpencode(ctx context.Context, bin, workDir string) (listenURL string, cmd *exec.Cmd, err error) {
-	cmd = exec.CommandContext(ctx, bin, "serve", "--hostname=127.0.0.1", "--port=0")
+	cmd = exec.CommandContext(ctx, bin, "serve", "--hostname=127.0.0.1", "--port=4096")
 	cmd.Dir = workDir
-	stdout, err := cmd.StdoutPipe()
+
+	// 重定向输出到文件而不是管道，避免阻塞
+	logFile := filepath.Join(workDir, "opencode.log")
+	logF, err := os.Create(logFile)
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("failed to create log file: %w", err)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+
 	if err := cmd.Start(); err != nil {
+		logF.Close()
 		return "", nil, err
 	}
-	scanner := bufio.NewScanner(stdout)
+
+	// 在单独的 goroutine 中等待进程结束并关闭日志文件
+	go func() {
+		cmd.Wait()
+		logF.Close()
+	}()
+
+	// 等待服务启动完成
 	deadline := time.Now().Add(30 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
 	for time.Now().Before(deadline) {
-		if !scanner.Scan() {
-			_ = cmd.Process.Kill()
-			return "", nil, fmt.Errorf("opencode exited before listening: %s", stderr.String())
-		}
-		line := scanner.Text()
-		if m := listenRE.FindStringSubmatch(line); len(m) > 1 {
-			return m[1], cmd, nil
+		select {
+		case <-ticker.C:
+			// 检查进程是否还在运行
+			if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+				return "", nil, fmt.Errorf("opencode process exited unexpectedly")
+			}
+
+			// 检查日志中是否包含启动成功的消息
+			logContent, err := os.ReadFile(logFile)
+			if err != nil {
+				continue
+			}
+
+			// 检查是否包含监听地址或启动成功的消息
+			if bytes.Contains(logContent, []byte("opencode server listening on")) {
+				return "http://127.0.0.1:4096", cmd, nil
+			}
+
+			// 检查是否有错误信息
+			if bytes.Contains(logContent, []byte("Error:")) || bytes.Contains(logContent, []byte("error:")) {
+				return "", nil, fmt.Errorf("opencode startup error detected in logs")
+			}
+
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
 		}
 	}
-	_ = cmd.Process.Kill()
-	return "", nil, fmt.Errorf("timeout waiting for opencode server: %s", stderr.String())
+
+	return "", nil, fmt.Errorf("timeout waiting for opencode server to start")
 }
 
 func (a *Adapter) ensureFilesInDirectory(ctx context.Context, channel string, files []mybot.File) ([]mybot.File, error) {

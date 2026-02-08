@@ -7,13 +7,15 @@ import (
 )
 
 type mockAdapter struct {
-	id       string
-	tags     []string
-	received chan Message
+	id            string
+	tags          []string
+	defaultTarget string
+	received      chan Message
 }
 
 func (m *mockAdapter) GetID() string                                      { return m.id }
 func (m *mockAdapter) GetTags() []string                                  { return m.tags }
+func (m *mockAdapter) GetDefaultTarget() string                           { return m.defaultTarget }
 func (m *mockAdapter) Status() string                                     { return "ok" }
 func (m *mockAdapter) Start(ctx context.Context, in chan<- Message) error { return nil }
 func (m *mockAdapter) ReceiveMessage(ctx context.Context, msg Message) error {
@@ -26,8 +28,8 @@ func TestDispatcher_Routing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	a1 := &mockAdapter{id: "a1", tags: []string{"type:ai"}, received: make(chan Message, 1)}
-	a2 := &mockAdapter{id: "a2", tags: []string{"type:tool"}, received: make(chan Message, 1)}
+	a1 := &mockAdapter{id: "a1", tags: []string{"type:ai"}, defaultTarget: "", received: make(chan Message, 1)}
+	a2 := &mockAdapter{id: "a2", tags: []string{"type:tool"}, defaultTarget: "", received: make(chan Message, 1)}
 
 	_ = d.Register(a1)
 	_ = d.Register(a2)

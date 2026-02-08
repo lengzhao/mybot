@@ -28,24 +28,27 @@ func init() {
 			model = "deepseek-chat"
 		}
 
+		defaultTarget, _ := config["default_target"].(string)
 		return &Adapter{
-			id:      id,
-			apiKey:  apiKey,
-			baseURL: baseURL,
-			model:   model,
-			tags:    []string{"type:ai", "service:deepseek"},
+			id:            id,
+			apiKey:        apiKey,
+			baseURL:       baseURL,
+			model:         model,
+			tags:          []string{"type:ai", "service:deepseek"},
+			defaultTarget: defaultTarget,
 		}, nil
 	})
 }
 
 // Adapter DeepSeek 对话适配器
 type Adapter struct {
-	id      string
-	apiKey  string
-	baseURL string
-	model   string
-	tags    []string
-	inbound chan<- mybot.Message
+	id            string
+	apiKey        string
+	baseURL       string
+	model         string
+	tags          []string
+	defaultTarget string
+	inbound       chan<- mybot.Message
 }
 
 type deepSeekRequest struct {
@@ -75,6 +78,10 @@ func (a *Adapter) GetID() string {
 
 func (a *Adapter) GetTags() []string {
 	return a.tags
+}
+
+func (a *Adapter) GetDefaultTarget() string {
+	return a.defaultTarget
 }
 
 func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
@@ -133,10 +140,17 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 		return fmt.Errorf("deepseek api returned no choices")
 	}
 
+	// 如果消息没有明确的目标适配器，但当前适配器有默认目标，则使用默认目标
+	targetAdapter := msg.SourceAdapter
+	defaultTarget := a.GetDefaultTarget()
+	if defaultTarget != "" {
+		targetAdapter = defaultTarget
+	}
+
 	response := mybot.Message{
 		ID:            fmt.Sprintf("ds-%d", time.Now().UnixNano()),
 		SourceAdapter: a.id,
-		TargetAdapter: msg.SourceAdapter,
+		TargetAdapter: targetAdapter,
 		Content:       dsResp.Choices[0].Message.Content,
 		Type:          mybot.TypeText,
 		Timestamp:     time.Now().UnixMilli(),

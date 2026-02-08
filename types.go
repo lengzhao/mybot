@@ -53,6 +53,9 @@ type Adapter interface {
 	// GetTags 返回该适配器的属性标签 (用于标签路由)
 	GetTags() []string
 
+	// GetDefaultTarget 返回该适配器的默认目标适配器ID
+	GetDefaultTarget() string
+
 	// Start 启动监听：接收端上事件 -> 封装 Message -> 投递至 inbound
 	Start(ctx context.Context, inbound chan<- Message) error
 

@@ -12,20 +12,23 @@ import (
 
 func init() {
 	mybot.RegisterAdapterType("console", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
-		return NewAdapter(id), nil
+		return NewAdapter(id, config), nil
 	})
 }
 
 // Adapter 终端适配器
 type Adapter struct {
-	id   string
-	tags []string
+	id            string
+	tags          []string
+	defaultTarget string
 }
 
-func NewAdapter(id string) *Adapter {
+func NewAdapter(id string, config map[string]interface{}) *Adapter {
+	defaultTarget, _ := config["default_target"].(string)
 	return &Adapter{
-		id:   id,
-		tags: []string{"platform:console", "type:terminal"},
+		id:            id,
+		tags:          []string{"platform:console", "type:terminal"},
+		defaultTarget: defaultTarget,
 	}
 }
 
@@ -35,6 +38,10 @@ func (c *Adapter) GetID() string {
 
 func (c *Adapter) GetTags() []string {
 	return c.tags
+}
+
+func (c *Adapter) GetDefaultTarget() string {
+	return c.defaultTarget
 }
 
 func (c *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {

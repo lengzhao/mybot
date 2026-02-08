@@ -7,14 +7,17 @@ adapters:
   - id: "console_1"
     type: "console"
     enabled: true
+    default_target: "deepseek_chat"  # 控制台输入的消息默认发送到deepseek_chat
 
   - id: "echo_service"
     type: "echo"
     enabled: true
+    default_target: "console_1"      # echo适配器的回复默认发送回console
 
   - id: "deepseek_chat"
     type: "deepseek"
     enabled: false
+    default_target: "console_1"      # deepseek的回复默认发送回console
     config:
       api_key: "YOUR_DEEPSEEK_API_KEY"
       model: "deepseek-chat"
@@ -24,6 +27,7 @@ adapters:
   - id: "opencode_1"
     type: "opencode"
     enabled: false
+    default_target: "console_1"      # opencode的回复默认发送回console
     config:
       # workdir: "./custom"  # 可选，不填则用 adapter_dir
       # base_url: "http://localhost:3000"

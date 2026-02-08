@@ -16,16 +16,17 @@ type Config struct {
 // SystemConfig 系统全局配置
 type SystemConfig struct {
 	TraceEnabled   bool   `yaml:"trace_enabled"`
-	WorkDir        string `yaml:"work_dir"`         // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
+	WorkDir        string `yaml:"work_dir"`        // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
 	DefaultAdapter string `yaml:"default_adapter"` // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
 }
 
 // AdapterConfig 适配器实例配置
 type AdapterConfig struct {
-	ID      string                 `yaml:"id"`
-	Type    string                 `yaml:"type"`
-	Enabled bool                   `yaml:"enabled"`
-	Config  map[string]interface{} `yaml:"config"`
+	ID            string                 `yaml:"id"`
+	Type          string                 `yaml:"type"`
+	Enabled       bool                   `yaml:"enabled"`
+	DefaultTarget string                 `yaml:"default_target,omitempty"` // 默认目标适配器ID
+	Config        map[string]interface{} `yaml:"config"`
 }
 
 // LoadConfig 从指定路径加载 YAML 配置文件

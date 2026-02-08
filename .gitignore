@@ -33,3 +33,6 @@ go.work.sum
 .cursor/
 .qoder/
 mybot_bin
+.env
+config.yaml
+tmp/
