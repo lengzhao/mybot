@@ -32,6 +32,14 @@ adapters:
     # opencode_bin: "opencode"
     # api_key: ""
 
+  # Lark 适配器：接入飞书/Lark 机器人
+  - id: "lark_bot"
+    type: "lark"
+    enabled: false
+    default_target: "deepseek_chat"   # lark收到的消息默认发送到 deepseek_chat
+    app_id: "YOUR_LARK_APP_ID"
+    app_secret: "YOUR_LARK_APP_SECRET"
+
   # WebChat 适配器：提供基于Web的聊天界面
   - id: "webchat"
     type: "webchat"
