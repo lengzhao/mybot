@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,53 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 
 func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	slog.Debug("Received message from OpenCode", "channel", msg.Channel, "content", msg.Content, "files", msg.Files)
+
+	// 处理 /reset：重置当前上下文对应的 Session，并不下发到 OpenCode
+	if strings.TrimSpace(msg.Content) == "/reset" {
+		oldID, newID, err := a.resetSession(ctx, msg.Channel)
+		if err != nil {
+			slog.Error("Failed to reset session", "channel", msg.Channel, "err", err)
+		}
+
+		var resetMsg string
+		if err != nil {
+			resetMsg = fmt.Sprintf("重置会话失败: %v", err)
+		} else {
+			resetMsg = "已重置当前对话上下文，新的 Session 已创建。"
+		}
+
+		// 如果有旧的 / 新的 sessionID，记录到日志文件中
+		if oldID != "" || newID != "" {
+			a.logSessionEvent(oldID, "SESSION_RESET_OLD channel=%s new_session=%s", msg.Channel, newID)
+			a.logSessionEvent(newID, "SESSION_RESET_NEW channel=%s old_session=%s", msg.Channel, oldID)
+		}
+
+		// 选择目标适配器：优先使用默认目标
+		targetAdapter := msg.SourceAdapter
+		if dt := a.GetDefaultTarget(); dt != "" {
+			targetAdapter = dt
+		}
+
+		reply := mybot.Message{
+			ID:            fmt.Sprintf("oc-reset-%d", time.Now().UnixNano()),
+			ParentID:      msg.ID,
+			SourceAdapter: a.id,
+			TargetAdapter: targetAdapter,
+			Content:       resetMsg,
+			Type:          mybot.TypeText,
+			Timestamp:     time.Now().UnixMilli(),
+			UserID:        "opencode",
+			Channel:       msg.Channel,
+		}
+
+		select {
+		case a.inbound <- reply:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return err
+	}
+
 	sessionID, err := a.getOrCreateSession(ctx, msg.Channel)
 	if err != nil {
 		slog.Error("Failed to get or create session", "channel", msg.Channel, "err", err)
@@ -113,14 +161,22 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 		return err
 	}
 	parts := a.buildParts(msg.Content, files)
+
+	// 记录请求日志
+	a.logSessionEvent(sessionID, "REQUEST channel=%s content=%q files=%d", msg.Channel, msg.Content, len(files))
+
 	resp, err := a.prompt(ctx, sessionID, parts)
 	if err != nil {
 		slog.Error("Failed to get response from OpenCode", "channel", msg.Channel, "err", err)
+		a.logSessionEvent(sessionID, "RESPONSE_ERROR channel=%s error=%v", msg.Channel, err)
 		return err
 	}
 	slog.Debug("Received response from OpenCode", "channel", msg.Channel, "response", resp)
 
 	content := a.collectTextParts(resp.Parts)
+
+	// 记录回复日志（只记录文本部分的汇总）
+	a.logSessionEvent(sessionID, "RESPONSE channel=%s content=%q", msg.Channel, content)
 
 	// 如果消息没有明确的目标适配器，但当前适配器有默认目标，则使用默认目标
 	targetAdapter := msg.SourceAdapter
@@ -325,9 +381,23 @@ func (a *Adapter) getOrCreateSession(ctx context.Context, channel string) (strin
 	sid, ok := a.sessions[channel]
 	a.mu.RUnlock()
 	if ok {
+		a.logSessionEvent(sid, "REUSE_SESSION channel=%s directory=%s", channel, a.directory)
 		return sid, nil
 	}
 
+	sid, err := a.createSession(ctx, channel)
+	if err != nil {
+		return "", err
+	}
+
+	a.mu.Lock()
+	a.sessions[channel] = sid
+	a.mu.Unlock()
+	return sid, nil
+}
+
+// createSession 创建新的 OpenCode Session，不写入缓存映射，由调用方决定是否缓存。
+func (a *Adapter) createSession(ctx context.Context, channel string) (string, error) {
 	body := map[string]interface{}{"title": "channel:" + channel}
 	reqBody, _ := json.Marshal(body)
 	u := a.baseURL + "/session"
@@ -363,10 +433,52 @@ func (a *Adapter) getOrCreateSession(ctx context.Context, channel string) (strin
 		return "", fmt.Errorf("opencode create session: empty id")
 	}
 
-	a.mu.Lock()
-	a.sessions[channel] = ses.ID
-	a.mu.Unlock()
+	// 记录创建 Session 的日志
+	a.logSessionEvent(ses.ID, "CREATE_SESSION channel=%s directory=%s", channel, a.directory)
 	return ses.ID, nil
+}
+
+// resetSession 删除旧 Session（若存在）并创建新的 Session，更新 channel→sessionID 映射。
+func (a *Adapter) resetSession(ctx context.Context, channel string) (oldID, newID string, err error) {
+	a.mu.RLock()
+	oldID = a.sessions[channel]
+	a.mu.RUnlock()
+
+	newID, err = a.createSession(ctx, channel)
+	if err != nil {
+		return oldID, "", err
+	}
+
+	a.mu.Lock()
+	a.sessions[channel] = newID
+	a.mu.Unlock()
+
+	return oldID, newID, nil
+}
+
+// logSessionEvent 将交互记录写入工作目录下 logs/session_id.log
+func (a *Adapter) logSessionEvent(sessionID, format string, args ...interface{}) {
+	if sessionID == "" || a.directory == "" {
+		return
+	}
+	logsDir := filepath.Join(a.directory, "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		slog.Error("Failed to create logs directory", "dir", logsDir, "err", err)
+		return
+	}
+	path := filepath.Join(logsDir, sessionID+".log")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		slog.Error("Failed to open session log file", "path", path, "err", err)
+		return
+	}
+	defer f.Close()
+
+	ts := time.Now().Format(time.RFC3339Nano)
+	line := fmt.Sprintf("%s "+format+"\n", append([]interface{}{ts}, args...)...)
+	if _, err := f.WriteString(line); err != nil {
+		slog.Error("Failed to write session log", "path", path, "err", err)
+	}
 }
 
 func (a *Adapter) buildParts(content string, files []mybot.File) []map[string]interface{} {
