@@ -169,8 +169,8 @@ func (s *Service) handleListMessages(rw http.ResponseWriter, r *http.Request) {
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	if filter.Limit > 1000 {
-		filter.Limit = 1000 // 最大1000条
+	if filter.Limit > 100 {
+		filter.Limit = 100 // 最多100条
 	}
 
 	// 查询消息

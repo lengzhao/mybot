@@ -131,6 +131,7 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 
 	reply := mybot.Message{
 		ID:            fmt.Sprintf("oc-%d", time.Now().UnixNano()),
+		ParentID:      msg.ID,
 		SourceAdapter: a.id,
 		TargetAdapter: targetAdapter,
 		Content:       content,

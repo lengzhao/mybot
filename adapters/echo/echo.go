@@ -55,6 +55,7 @@ func (e *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 
 	response := mybot.Message{
 		ID:            fmt.Sprintf("echo-%d", time.Now().UnixNano()),
+		ParentID:      msg.ID,
 		SourceAdapter: e.id,
 		TargetAdapter: targetAdapter,
 		Content:       "[Echo] " + msg.Content,
