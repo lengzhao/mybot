@@ -5,13 +5,15 @@ import (
 )
 
 // MessageType 定义消息载荷类型
+// 附件统一走 Message.Files，此处仅表示载荷语义（文本/命令/交互/事件/思考等）
 type MessageType string
 
 const (
-	TypeText    MessageType = "text"
-	TypeImage   MessageType = "image"
-	TypeFile    MessageType = "file"
-	TypeCommand MessageType = "command"
+	TypeText        MessageType = "text"        // 普通文本
+	TypeCommand     MessageType = "command"    // 用户命令（如 /reset）
+	TypeInteraction MessageType = "interaction" // 交互：权限确认、问答选择等，可映射为按钮/卡片
+	TypeEvent       MessageType = "event"      // 平台或系统事件
+	TypeThinking    MessageType = "thinking"   // AI 思考过程/中间状态（如流式推理片段）
 )
 
 // StateStore 状态存储接口
@@ -32,20 +34,9 @@ type StateStore interface {
 	Stop() error
 }
 
-// MessageRecord 消息记录结构
+// MessageRecord 消息记录：内嵌 Message，仅增加存储相关字段
 type MessageRecord struct {
-	ID            string                 `json:"id" db:"id"`
-	SourceAdapter string                 `json:"source_adapter" db:"source_adapter"`
-	TargetAdapter string                 `json:"target_adapter" db:"target_adapter"`
-	UserID        string                 `json:"user_id" db:"user_id"`
-	Channel       string                 `json:"channel" db:"channel"`
-	Content       string                 `json:"content" db:"content"`
-	Type          MessageType            `json:"type" db:"type"`
-	Timestamp     int64                  `json:"timestamp" db:"timestamp"`
-	Files         []File                 `json:"files" db:"files"`
-	Extra         map[string]interface{} `json:"extra" db:"extra"`
-
-	// 统计字段
+	Message
 	ProcessedAt int64 `json:"processed_at" db:"processed_at"` // 处理时间
 }
 
@@ -79,30 +70,31 @@ type Stats struct {
 // 约定：Message 中的 Files 默认应存于「处理该消息的 adapter 的 directory」下；
 // 能处理文件的 adapter 在接收消息时，应先把附件转存到自己的工作目录再处理。
 type File struct {
-	Name     string `json:"name"`      // 文件名
-	URL      string `json:"url"`       // 文件地址 (http(s) 或 file://)
-	MimeType string `json:"mime_type"` // MIME 类型
-	Size     int64  `json:"size"`      // 字节数，可选
+	Name     string `json:"name"      db:"name"`      // 文件名
+	URL      string `json:"url"       db:"url"`      // 文件地址 (http(s) 或 file://)
+	MimeType string `json:"mime_type" db:"mime_type"` // MIME 类型
+	Size     int64  `json:"size"      db:"size"`      // 字节数，可选
 }
 
 // Message 统一消息模型
 type Message struct {
-	ID            string `json:"id"`             // 消息唯一标识
-	SourceAdapter string `json:"source_adapter"` // 来源适配器 ID
-	TargetAdapter string `json:"target_adapter"` // 目标适配器 ID (可选，P2P 路由)
+	ID            string `json:"id"              db:"id"`
+	ParentID      string `json:"parent_id"       db:"parent_id"`       // 所回复的消息 ID，空表示根消息
+	SourceAdapter string `json:"source_adapter"  db:"source_adapter"`
+	TargetAdapter string `json:"target_adapter"  db:"target_adapter"`
 
 	// 核心业务上下文
-	UserID  string `json:"user_id"` // 发送者唯一 ID
-	Channel string `json:"channel"` // 频道/群组/会话 ID
+	UserID  string `json:"user_id"  db:"user_id"`   // 发送者唯一 ID
+	Channel string `json:"channel"  db:"channel"`  // 频道/群组/会话 ID
 
 	// 核心载荷
-	Content   string      `json:"content"`   // 文本内容或主要 Payload
-	Type      MessageType `json:"type"`      // 消息类型
-	Timestamp int64       `json:"timestamp"` // 发生时间 (Unix 毫秒)
-	Files     []File      `json:"files"`     // 附件列表
+	Content   string      `json:"content"   db:"content"`   // 文本内容或主要 Payload
+	Type      MessageType `json:"type"      db:"type"`      // 消息类型
+	Timestamp int64       `json:"timestamp" db:"timestamp"` // 发生时间 (Unix 毫秒)
+	Files     []File      `json:"files"     db:"files"`     // 附件列表
 
 	// 扩展字段
-	Extra map[string]interface{} `json:"extra"`
+	Extra map[string]interface{} `json:"extra" db:"extra"`
 }
 
 // Adapter 适配器接口

@@ -17,6 +17,7 @@ import (
 // MessageModel GORM 消息模型
 type MessageModel struct {
 	ID            string `gorm:"primaryKey" json:"id"`
+	ParentID      string `gorm:"index" json:"parent_id"`
 	SourceAdapter string `gorm:"index" json:"source_adapter"`
 	TargetAdapter string `gorm:"index" json:"target_adapter"`
 	UserID        string `gorm:"index" json:"user_id"`
@@ -137,6 +138,7 @@ func (s *SQLiteStore) RecordMessage(msg Message) error {
 	// 创建消息模型
 	messageModel := MessageModel{
 		ID:            msg.ID,
+		ParentID:      msg.ParentID,
 		SourceAdapter: msg.SourceAdapter,
 		TargetAdapter: msg.TargetAdapter,
 		UserID:        msg.UserID,
@@ -208,11 +210,12 @@ func (s *SQLiteStore) QueryMessages(filter MessageFilter) ([]MessageRecord, erro
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
 
-	// 转换为 MessageRecord
+	// 转换为 MessageRecord（内嵌 Message）
 	var records []MessageRecord
 	for _, model := range models {
-		record := MessageRecord{
+		msg := Message{
 			ID:            model.ID,
+			ParentID:      model.ParentID,
 			SourceAdapter: model.SourceAdapter,
 			TargetAdapter: model.TargetAdapter,
 			UserID:        model.UserID,
@@ -220,23 +223,14 @@ func (s *SQLiteStore) QueryMessages(filter MessageFilter) ([]MessageRecord, erro
 			Content:       model.Content,
 			Type:          MessageType(model.Type),
 			Timestamp:     model.Timestamp,
-			ProcessedAt:   model.ProcessedAt,
 		}
-
-		// 反序列化复杂字段
 		if len(model.Files) > 0 {
-			if err := json.Unmarshal([]byte(model.Files), &record.Files); err != nil {
-				slog.Warn("failed to unmarshal files", "err", err)
-			}
+			_ = json.Unmarshal([]byte(model.Files), &msg.Files)
 		}
-
 		if len(model.Extra) > 0 {
-			if err := json.Unmarshal([]byte(model.Extra), &record.Extra); err != nil {
-				slog.Warn("failed to unmarshal extra", "err", err)
-			}
+			_ = json.Unmarshal([]byte(model.Extra), &msg.Extra)
 		}
-
-		records = append(records, record)
+		records = append(records, MessageRecord{Message: msg, ProcessedAt: model.ProcessedAt})
 	}
 
 	return records, nil

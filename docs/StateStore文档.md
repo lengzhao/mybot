@@ -109,19 +109,11 @@ fmt.Printf("各用户消息数: %v\n", stats.MessagesByUser)
 ## 数据结构
 
 ### MessageRecord
+内嵌 `Message`，仅增加存储字段 `ProcessedAt`。访问 `ID`、`Content`、`Type`、`Files` 等均通过内嵌的 `Message` 提升字段。
 ```go
 type MessageRecord struct {
-    ID            string                 `json:"id"`
-    SourceAdapter string                 `json:"source_adapter"`
-    TargetAdapter string                 `json:"target_adapter"`
-    UserID        string                 `json:"user_id"`
-    Channel       string                 `json:"channel"`
-    Content       string                 `json:"content"`
-    Type          string                 `json:"type"`
-    Timestamp     int64                  `json:"timestamp"`
-    Files         []File                 `json:"files"`
-    Extra         map[string]interface{} `json:"extra"`
-    ProcessedAt   int64                  `json:"processed_at"`
+    Message
+    ProcessedAt int64 `json:"processed_at" db:"processed_at"` // 处理时间
 }
 ```
 
