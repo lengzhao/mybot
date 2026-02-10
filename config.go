@@ -14,10 +14,9 @@ type Config struct {
 	Adapters []AdapterConfig `yaml:"adapters"`
 }
 
-// SystemConfig 系统全局配置
 type SystemConfig struct {
 	TraceEnabled   bool             `yaml:"trace_enabled"`
-	WorkDir        string           `yaml:"work_dir"`        // 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
+	WorkDir        string           `yaml:"work_dir"`        // 主程序工作目录，空则使用「配置文件所在目录/workdir」；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
 	DefaultAdapter string           `yaml:"default_adapter"` // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
 	StateStore     StateStoreConfig `yaml:"state_store"`     // 状态存储配置
 	Admin          AdminConfig      `yaml:"admin"`           // 管理服务配置
@@ -54,6 +53,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, err
 	}
+	cfg.System.WorkDir = filepath.Join(filepath.Dir(path), cfg.System.WorkDir)
 	slog.Debug("Loaded config", "config", cfg)
 
 	return &cfg, nil
