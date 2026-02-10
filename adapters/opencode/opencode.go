@@ -676,15 +676,14 @@ func (a *Adapter) buildParts(content string, files []mybot.File) []map[string]in
 		parts = append(parts, map[string]interface{}{"type": "text", "text": content})
 	}
 	for _, f := range files {
-		p := map[string]interface{}{
-			"type": "file",
-			"mime": f.MimeType,
-			"url":  f.URL,
-		}
+		text := f.URL
 		if f.Name != "" {
-			p["filename"] = f.Name
+			text = fmt.Sprintf("%s (%s)", f.Name, f.URL)
 		}
-		parts = append(parts, p)
+		parts = append(parts, map[string]interface{}{
+			"type": "text",
+			"text": text,
+		})
 	}
 	if len(parts) == 0 {
 		parts = append(parts, map[string]interface{}{"type": "text", "text": ""})

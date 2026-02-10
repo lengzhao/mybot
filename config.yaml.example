@@ -41,6 +41,15 @@ adapters:
     model: "deepseek-chat"
     # base_url: "https://api.deepseek.com/v1"
 
+  # Cursor 适配器：通过 Cursor Agent CLI 调用 Cursor，本地已配置好的 workspace/model/mode 等均复用 CLI 自身配置；
+  # 会按 channel 维度自动 create-chat 并用 --resume 复用会话
+  - id: "cursor_1"
+    type: "cursor"
+    enabled: false
+    # default_target: "console_1"      # cursor 的回复默认发送到该适配器
+    # cursor_bin: "agent"              # 可选，默认 "agent"
+    # args: ["-f", "--approve-mcps"]   # 传给 Cursor CLI 的全局参数，位于 command 前，如：agent -f --approve-mcps agent "prompt"
+
   # OpenCode 适配器：工作目录默认用 adapter_dir（adapters/opencode_1），可选 workdir 覆盖；不填 base_url 时自启动
   - id: "opencode_1"
     type: "opencode"

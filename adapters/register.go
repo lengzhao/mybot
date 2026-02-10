@@ -3,6 +3,7 @@ package adapters
 
 import (
 	_ "github.com/lengzhao/mybot/adapters/console"
+	_ "github.com/lengzhao/mybot/adapters/cursor"
 	_ "github.com/lengzhao/mybot/adapters/deepseek"
 	_ "github.com/lengzhao/mybot/adapters/echo"
 	_ "github.com/lengzhao/mybot/adapters/lark"

@@ -109,6 +109,7 @@ func (d *Dispatcher) dispatch(msg Message) {
 			slog.Error("failed to record message to state store", "err", err, "msg_id", msg.ID)
 		}
 	}
+	slog.Debug("dispatch message", "msg", msg)
 
 	// 1. P2P 投递优先
 	if msg.TargetAdapter != "" {
