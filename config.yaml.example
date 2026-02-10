@@ -1,23 +1,42 @@
+# MyBot 配置文件示例
+# 说明：
+# - system.work_dir 为工作目录，主程序会为每个 adapter 注入 adapter_dir = work_dir/adapters/{adapter_id}
+# - 支持文件收发的 adapter（如 opencode、lark、webchat）会使用 adapter_dir 存放上传/生成的文件
+# - default_adapter：无明确目标且无标签匹配时，消息投递到该适配器
+# - 各 adapter 的 default_target：该适配器收到消息后，回复默认发往的目标适配器
+
 system:
   trace_enabled: true
-  # work_dir: "."           # 主程序工作目录，空则用进程 cwd；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
-  default_adapter: "deepseek_chat"  # 路由兜底：无 Target 且无 Tags（或标签无匹配）时投递到该 adapter
+  # work_dir: "."           # 主程序工作目录，空则用进程 cwd；各 adapter 的 adapter_dir = work_dir/adapters/{adapter_id}
+  default_adapter: "echo_service"  # 路由兜底：无 Target 且无 Tags（或标签无匹配）时投递到该 adapter
+
+  # 管理后台：提供会话/消息查询等管理界面（需同时启用 state_store）
+  # admin:
+  #   enabled: false        # 是否启用管理服务
+  #   port: "8081"          # 管理服务端口，默认 8081
+
+  # 状态存储：持久化消息等，供管理后台查询
+  # state_store:
+  #   enabled: false
+  #   db_path: "./data/mybot.db"
+  #   auto_cleanup: true    # 是否自动清理旧数据
+  #   cleanup_days: 30      # 清理多少天前的数据
 
 adapters:
   - id: "console_1"
     type: "console"
     enabled: true
-    default_target: "deepseek_chat"  # 控制台输入的消息默认发送到deepseek_chat
+    # default_target: "deepseek_chat"  # 控制台输入的消息默认发送到该适配器
 
   - id: "echo_service"
     type: "echo"
     enabled: true
-    default_target: "console_1"      # echo适配器的回复默认发送回console
+    # default_target: "console_1"      # echo 的回复默认发送到该适配器
 
   - id: "deepseek_chat"
     type: "deepseek"
     enabled: false
-    default_target: "console_1"      # deepseek的回复默认发送回console
+    # default_target: "console_1"      # deepseek 的回复默认发送到该适配器
     api_key: "YOUR_DEEPSEEK_API_KEY"
     model: "deepseek-chat"
     # base_url: "https://api.deepseek.com/v1"
@@ -26,7 +45,7 @@ adapters:
   - id: "opencode_1"
     type: "opencode"
     enabled: false
-    default_target: "console_1"      # opencode的回复默认发送回console
+    # default_target: "console_1"     # opencode 的回复默认发送到该适配器
     # workdir: "./custom"  # 可选，不填则用 adapter_dir
     # base_url: "http://localhost:3000"
     # opencode_bin: "opencode"
@@ -34,16 +53,19 @@ adapters:
     # allow_execute: true  # 为 true（默认）时允许写文件与执行命令（如写并运行 Python），设为 false 则仅对话
 
   # Lark 适配器：接入飞书/Lark 机器人
+  # 说明：adapter_dir 由主程序自动注入，用于存放用户发送的文件（下载到本地后供下游使用）
+  # 回复中的附件：需配置 drive_parent_node（云文档某文件夹 token），否则仅发送文本
   - id: "lark_bot"
     type: "lark"
     enabled: false
-    default_target: "deepseek_chat"   # lark收到的消息默认发送到 deepseek_chat
+    # default_target: "deepseek_chat" # lark 收到的消息默认发送到该适配器
     app_id: "YOUR_LARK_APP_ID"
     app_secret: "YOUR_LARK_APP_SECRET"
+    # drive_parent_node: "fldxxx"     # 可选。云文档父目录 token，回复时上传附件并发送文件消息；不设则只发文本
 
-  # WebChat 适配器：提供基于Web的聊天界面
+  # WebChat 适配器：提供基于 Web 的聊天界面；支持上传附件，回复中的文件会显示下载链接
   - id: "webchat"
     type: "webchat"
     enabled: true
-    default_target: "echo"      # webchat的回复默认发送回echo或其他指定适配器
-    port: 8080              # Web服务器端口
+    # default_target: "echo"          # webchat 的回复默认发送到该适配器（如 opencode_1）
+    port: 8080                  # HTTP/WebSocket 服务端口
