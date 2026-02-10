@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +38,8 @@ type Adapter struct {
 	id             string
 	defaultTarget  string
 	port           string
+	uploadDir      string
+	fileNames      sync.Map // id -> string 原始文件名，用于 GET /files/:id 的 Content-Disposition
 	server         *http.Server
 	inbound        chan<- mybot.Message
 	stateStore     mybot.StateStore // 状态存储引用
@@ -67,11 +73,20 @@ func NewAdapter(id string, config map[string]interface{}) *Adapter {
 	if port == "" {
 		port = "8080" // 默认端口
 	}
+	adapterDir, _ := config["adapter_dir"].(string)
+	uploadDir := filepath.Join(adapterDir, "uploads")
+	if adapterDir == "" {
+		uploadDir = filepath.Join(os.TempDir(), "webchat_uploads", id)
+	}
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		slog.Warn("WebChat upload dir create failed, uploads may fail", "dir", uploadDir, "err", err)
+	}
 
 	adapter := &Adapter{
 		id:             id,
 		defaultTarget:  defaultTarget,
 		port:           port,
+		uploadDir:      uploadDir,
 		activeSessions: make(map[string]*Session),
 		clients:        make(map[*Client]bool),
 		broadcast:      make(chan mybot.Message),
@@ -97,6 +112,8 @@ func (w *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 	http.HandleFunc("/", w.handleIndex) // 添加主页路由
 	http.HandleFunc("/ws", w.handleWebSocket)
 	http.HandleFunc("/send", w.handlePostSend)
+	http.HandleFunc("/upload", w.handleUpload)
+	http.HandleFunc("/files/", w.handleFileServe)
 	http.HandleFunc("/health", w.handleHealth)
 	http.HandleFunc("/sessions", w.handleListSessions)
 	// 提供静态文件服务
@@ -291,6 +308,7 @@ func (w *Adapter) readPump(client *Client) {
 		var msgReq struct {
 			SessionID string                 `json:"session_id"`
 			Content   string                 `json:"content"`
+			Files     []mybot.File           `json:"files,omitempty"`
 			Extra     map[string]interface{} `json:"extra,omitempty"`
 		}
 
@@ -328,6 +346,7 @@ func (w *Adapter) readPump(client *Client) {
 			Content:       msgReq.Content,
 			Type:          mybot.TypeText,
 			Timestamp:     time.Now().UnixMilli(),
+			Files:         msgReq.Files,
 			Extra:         msgReq.Extra,
 		}
 
@@ -384,6 +403,7 @@ func (w *Adapter) handlePostSend(rw http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SessionID string                 `json:"session_id"`
 		Content   string                 `json:"content"`
+		Files     []mybot.File           `json:"files,omitempty"`
 		Extra     map[string]interface{} `json:"extra,omitempty"`
 	}
 
@@ -421,6 +441,7 @@ func (w *Adapter) handlePostSend(rw http.ResponseWriter, r *http.Request) {
 		Content:       req.Content,
 		Type:          mybot.TypeText,
 		Timestamp:     time.Now().UnixMilli(),
+		Files:         req.Files,
 		Extra:         req.Extra,
 	}
 
@@ -435,6 +456,189 @@ func (w *Adapter) handlePostSend(rw http.ResponseWriter, r *http.Request) {
 	case <-time.After(5 * time.Second): // 5秒超时
 		http.Error(rw, "Timeout sending message", http.StatusInternalServerError)
 	}
+}
+
+// handleUpload 处理文档上传，返回 files 列表（含 url 供后续发消息携带）
+func (w *Adapter) handleUpload(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		rw.Header().Set("Allow", "POST")
+		rw.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	const maxUploadMB = 20
+	if err := r.ParseMultipartForm(maxUploadMB << 20); err != nil {
+		http.Error(rw, "parse multipart: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+
+	out := make([]mybot.File, 0)
+	for _, headers := range r.MultipartForm.File {
+		for _, hdr := range headers {
+			f, err := hdr.Open()
+			if err != nil {
+				slog.Warn("Upload open file failed", "filename", hdr.Filename, "err", err)
+				continue
+			}
+			id, path, err := w.saveUploadedFile(f, hdr)
+			f.Close()
+			if err != nil {
+				slog.Warn("Upload save failed", "filename", hdr.Filename, "err", err)
+				continue
+			}
+			w.fileNames.Store(id, hdr.Filename)
+			baseURL := w.requestBaseURL(r)
+			out = append(out, mybot.File{
+				Name:     hdr.Filename,
+				URL:      baseURL + "/files/" + id,
+				MimeType: hdr.Header.Get("Content-Type"),
+				Size:     hdr.Size,
+			})
+			_ = path
+		}
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]interface{}{"files": out})
+}
+
+func (w *Adapter) saveUploadedFile(f multipart.File, hdr *multipart.FileHeader) (id string, path string, err error) {
+	b := make([]byte, 16)
+	if _, err = rand.Read(b); err != nil {
+		return "", "", err
+	}
+	id = hex.EncodeToString(b)
+	ext := filepath.Ext(hdr.Filename)
+	if ext != "" {
+		id = id + ext
+	}
+	path = filepath.Join(w.uploadDir, id)
+	dst, err := os.Create(path)
+	if err != nil {
+		return "", "", err
+	}
+	_, err = io.Copy(dst, f)
+	dst.Close()
+	if err != nil {
+		os.Remove(path)
+		return "", "", err
+	}
+	return id, path, nil
+}
+
+func (w *Adapter) requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if s := r.Header.Get("X-Forwarded-Proto"); s != "" {
+		scheme = s
+	}
+	return scheme + "://" + r.Host
+}
+
+// handleFileServe 提供已上传文件的下载
+func (w *Adapter) handleFileServe(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" && r.Method != "HEAD" {
+		rw.Header().Set("Allow", "GET, HEAD")
+		rw.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/files/")
+	if id == "" || strings.Contains(id, "/") || strings.Contains(id, "..") {
+		http.Error(rw, "invalid file id", http.StatusBadRequest)
+		return
+	}
+	path := filepath.Join(w.uploadDir, id)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(rw, r)
+			return
+		}
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if info.IsDir() {
+		http.NotFound(rw, r)
+		return
+	}
+	if name, ok := w.fileNames.Load(id); ok {
+		rw.Header().Set("Content-Disposition", "attachment; filename=\""+strings.ReplaceAll(name.(string), "\"", "%22")+"\"")
+	}
+	http.ServeFile(rw, r, path)
+}
+
+// resolveMessageFiles 将消息中 file:// 附件复制到 webchat 的 upload 目录，并替换为可被前端下载的 URL（/files/:id）。
+func (w *Adapter) resolveMessageFiles(ctx context.Context, msg mybot.Message) mybot.Message {
+	if len(msg.Files) == 0 {
+		return msg
+	}
+	resolved := make([]mybot.File, 0, len(msg.Files))
+	for _, f := range msg.Files {
+		u, err := url.Parse(f.URL)
+		if err != nil || (u.Scheme != "file" && u.Scheme != "http" && u.Scheme != "https") {
+			resolved = append(resolved, f)
+			continue
+		}
+		if u.Scheme == "http" || u.Scheme == "https" {
+			resolved = append(resolved, f)
+			continue
+		}
+		path := u.Path
+		if u.Host != "" {
+			path = u.Host + u.Path
+		}
+		id, err := w.copyFileToUpload(ctx, path, f.Name)
+		if err != nil {
+			slog.Warn("WebChat resolve file failed", "url", f.URL, "err", err)
+			resolved = append(resolved, f)
+			continue
+		}
+		w.fileNames.Store(id, f.Name)
+		resolved = append(resolved, mybot.File{
+			Name:     f.Name,
+			URL:      "/files/" + id,
+			MimeType: f.MimeType,
+			Size:     f.Size,
+		})
+	}
+	msg.Files = resolved
+	return msg
+}
+
+func (w *Adapter) copyFileToUpload(ctx context.Context, srcPath, name string) (id string, err error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	info, err := src.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("cannot copy directory")
+	}
+	b := make([]byte, 16)
+	if _, err = rand.Read(b); err != nil {
+		return "", err
+	}
+	id = hex.EncodeToString(b)
+	if ext := filepath.Ext(name); ext != "" {
+		id = id + ext
+	}
+	dstPath := filepath.Join(w.uploadDir, id)
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return "", err
+	}
+	_, err = io.Copy(dst, src)
+	dst.Close()
+	if err != nil {
+		os.Remove(dstPath)
+		return "", err
+	}
+	return id, nil
 }
 
 // generateMessageID 生成唯一消息ID
@@ -453,9 +657,9 @@ func (w *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 
 	// 检查消息是否是发送给WebChat适配器的
 	if msg.TargetAdapter == w.id || msg.TargetAdapter == "" {
-		// 将消息广播给所有连接的客户端
+		out := w.resolveMessageFiles(ctx, msg)
 		select {
-		case w.broadcast <- msg:
+		case w.broadcast <- out:
 			slog.Debug("Broadcasting message to clients", "msg_id", msg.ID)
 		case <-time.After(time.Second):
 			slog.Warn("Failed to broadcast message, channel blocked", "msg_id", msg.ID)

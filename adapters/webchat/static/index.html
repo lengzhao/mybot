@@ -85,13 +85,100 @@
             background: #cccccc;
             cursor: not-allowed;
         }
-        
+        .input-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .file-input-wrap {
+            position: relative;
+        }
+        #fileInput { display: none; }
+        .btn-attach {
+            padding: 8px 14px;
+            background: #e0e0e0;
+            color: #333;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-attach:hover { background: #d0d0d0; }
+        .attachments-preview {
+            margin-top: 8px;
+            font-size: 13px;
+            color: #666;
+        }
+        .attachments-preview span {
+            display: inline-block;
+            margin-right: 8px;
+            padding: 2px 8px;
+            background: #E3F2FD;
+            border-radius: 4px;
+        }
+        .attachments-preview .remove-file { cursor: pointer; margin-left: 4px; color: #c00; }
+        .message-files {
+            margin-top: 8px;
+            padding-top: 6px;
+            border-top: 1px solid rgba(0,0,0,0.06);
+        }
+        .message-files a {
+            display: inline-block;
+            margin-right: 12px;
+            margin-bottom: 4px;
+            color: #1976d2;
+            text-decoration: none;
+        }
+        .message-files a:hover { text-decoration: underline; }
         .status {
             text-align: center;
             padding: 10px;
             color: #666;
         }
+        /* Markdown 渲染样式 */
+        .message-content h1, .message-content h2, .message-content h3 {
+            margin: 0.5em 0 0.25em;
+            font-weight: 600;
+        }
+        .message-content h1 { font-size: 1.25em; }
+        .message-content h2 { font-size: 1.1em; }
+        .message-content h3 { font-size: 1em; }
+        .message-content p { margin: 0.5em 0; }
+        .message-content ul, .message-content ol { margin: 0.5em 0; padding-left: 1.5em; }
+        .message-content li { margin: 0.25em 0; }
+        .message-content code {
+            background: rgba(0,0,0,0.06);
+            padding: 0.15em 0.4em;
+            border-radius: 4px;
+            font-family: ui-monospace, monospace;
+            font-size: 0.9em;
+        }
+        .message-content pre {
+            margin: 0.5em 0;
+            padding: 12px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        .message-content pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+        .message-content hr { border: none; border-top: 1px solid #ddd; margin: 1em 0; }
+        .message-content blockquote {
+            margin: 0.5em 0;
+            padding-left: 1em;
+            border-left: 4px solid #ccc;
+            color: #555;
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -106,8 +193,15 @@
         </div>
         
         <div class="input-container">
-            <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)">
-            <button id="sendButton" onclick="sendMessage()">发送</button>
+            <div class="input-row" style="width:100%">
+                <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)" style="flex:1">
+                <div class="file-input-wrap">
+                    <input type="file" id="fileInput" multiple accept="*/*">
+                    <button type="button" class="btn-attach" onclick="document.getElementById('fileInput').click()">上传文档</button>
+                </div>
+                <button id="sendButton" onclick="sendMessage()">发送</button>
+            </div>
+            <div class="attachments-preview" id="attachmentsPreview"></div>
         </div>
         
         <div class="status" id="status">就绪</div>
@@ -122,15 +216,42 @@
             return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
         }
         
-        function addMessage(content, isUser = false) {
+        let pendingAttachments = [];
+
+        function addMessage(content, isUser = false, files = null) {
             const chatContainer = document.getElementById('chatContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
-            messageDiv.textContent = content;
+            if (isUser) {
+                messageDiv.textContent = content;
+            } else {
+                const inner = document.createElement('div');
+                inner.className = 'message-content';
+                const rawHtml = typeof marked !== 'undefined' ? marked.parse(content || '', { gfm: true }) : escapeHtml(content);
+                inner.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(rawHtml) : rawHtml;
+                messageDiv.appendChild(inner);
+                if (files && files.length > 0) {
+                    const filesDiv = document.createElement('div');
+                    filesDiv.className = 'message-files';
+                    files.forEach(function(f) {
+                        const a = document.createElement('a');
+                        a.href = f.url || '#';
+                        a.target = '_blank';
+                        a.rel = 'noopener';
+                        a.download = f.name || '';
+                        a.textContent = '📎 ' + (f.name || '下载');
+                        filesDiv.appendChild(a);
+                    });
+                    messageDiv.appendChild(filesDiv);
+                }
+            }
             chatContainer.appendChild(messageDiv);
-            
-            // 自动滚动到底部
             chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
         
         function connectWebSocket() {
@@ -147,10 +268,8 @@
                 ws.onmessage = function(event) {
                     try {
                         const messageData = JSON.parse(event.data);
-                        // 显示来自机器人或其他适配器的消息
-                        addMessage(messageData.content, false);
+                        addMessage(messageData.content, false, messageData.files || null);
                     } catch(e) {
-                        // 如果不是JSON格式，直接显示原始内容
                         addMessage(event.data, false);
                     }
                 };
@@ -168,43 +287,68 @@
                 document.getElementById('status').textContent = '无法建立WebSocket连接: ' + e.message;
             }
         }
-        
+
+        async function uploadFiles() {
+            const input = document.getElementById('fileInput');
+            if (!input.files || input.files.length === 0) return;
+            const form = new FormData();
+            for (let i = 0; i < input.files.length; i++) form.append('files', input.files[i]);
+            document.getElementById('status').textContent = '上传中...';
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: form });
+                const data = await res.json();
+                if (data.files && data.files.length) {
+                    pendingAttachments = pendingAttachments.concat(data.files);
+                    renderAttachmentsPreview();
+                    document.getElementById('status').textContent = '已添加 ' + data.files.length + ' 个附件，可继续输入消息并发送';
+                } else {
+                    document.getElementById('status').textContent = '上传失败或无文件';
+                }
+            } catch (e) {
+                document.getElementById('status').textContent = '上传错误: ' + e.message;
+            }
+            input.value = '';
+        }
+
+        function renderAttachmentsPreview() {
+            const el = document.getElementById('attachmentsPreview');
+            if (pendingAttachments.length === 0) { el.innerHTML = ''; return; }
+            el.innerHTML = pendingAttachments.map(function(f, i) {
+                return '<span>' + escapeHtml(f.name) + '<span class="remove-file" onclick="removeAttachment(' + i + ')">×</span></span>';
+            }).join('');
+        }
+
+        function removeAttachment(index) {
+            pendingAttachments.splice(index, 1);
+            renderAttachmentsPreview();
+        }
+
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
-            
-            if (!message) return;
-            
-            // 显示用户消息
-            addMessage(message, true);
+            if (!message && pendingAttachments.length === 0) return;
+
+            addMessage(message || '(附件)', true);
             input.value = '';
-            
-            // 通过WebSocket发送消息
+            const filesToSend = pendingAttachments.slice();
+            pendingAttachments = [];
+            renderAttachmentsPreview();
+
+            const msgData = { session_id: sessionId, content: message || '' };
+            if (filesToSend.length) msgData.files = filesToSend;
+
             if (ws && ws.readyState === WebSocket.OPEN) {
-                const msgData = {
-                    session_id: sessionId,
-                    content: message
-                };
                 ws.send(JSON.stringify(msgData));
                 document.getElementById('status').textContent = '消息已发送，等待回复...';
             } else {
-                // 如果WebSocket不可用，回退到HTTP
                 document.getElementById('status').textContent = 'WebSocket未连接，使用HTTP发送...';
-                
                 try {
                     const response = await fetch('/send', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            session_id: sessionId,
-                            content: message
-                        })
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(msgData)
                     });
-                    
                     const result = await response.json();
-                    
                     if (response.ok) {
                         document.getElementById('status').textContent = '消息已发送，等待回复...';
                     } else {
@@ -217,17 +361,17 @@
                 }
             }
         }
-        
+
         function handleKeyPress(event) {
             if (event.key === 'Enter') {
                 sendMessage();
             }
         }
         
-        // 页面加载完成后的初始化
         document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('status').textContent = '正在连接WebSocket...';
             connectWebSocket();
+            document.getElementById('fileInput').addEventListener('change', uploadFiles);
         });
     </script>
 </body>

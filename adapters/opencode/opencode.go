@@ -21,6 +21,10 @@ import (
 
 const uploadsDir = "uploads"
 
+type contextKey string
+
+const workdirContextKey contextKey = "workdir"
+
 func init() {
 	mybot.RegisterAdapterType("opencode", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
 		slog.Debug("Creating OpenCode Adapter", "id", id, "config", config)
@@ -46,6 +50,10 @@ func init() {
 			bin = "opencode"
 		}
 		defaultTarget, _ := config["default_target"].(string)
+		allowExecute := true
+		if v, ok := config["allow_execute"].(bool); ok {
+			allowExecute = v
+		}
 		return &Adapter{
 			id:            id,
 			baseURL:       baseURL,
@@ -53,6 +61,7 @@ func init() {
 			apiKey:        apiKey,
 			opencodeBin:   bin,
 			defaultTarget: defaultTarget,
+			allowExecute:  allowExecute,
 			sessions:      make(map[string]string),
 		}, nil
 	})
@@ -66,6 +75,7 @@ type Adapter struct {
 	apiKey        string
 	opencodeBin   string
 	defaultTarget string
+	allowExecute  bool // 为 true 时在创建 Session 时授予 bash/edit allow，便于写并执行 Python 等代码
 	inbound       chan<- mybot.Message
 	mu            sync.RWMutex
 	sessions      map[string]string
@@ -78,6 +88,33 @@ func (a *Adapter) GetID() string {
 
 func (a *Adapter) GetDefaultTarget() string {
 	return a.defaultTarget
+}
+
+// getWorkdir 从 ctx 读取当前请求的工作目录（按 channel 创建）；未设置时退回适配器默认 directory。
+func (a *Adapter) getWorkdir(ctx context.Context) string {
+	if v := ctx.Value(workdirContextKey); v != nil {
+		return v.(string)
+	}
+	return a.directory
+}
+
+// workdirForChannel 根据 channel（优先）或 userID 计算该会话的工作目录，用于隔离不同会话的文件与 session。channel 为空时以 userID 区分。
+func (a *Adapter) workdirForChannel(channel, userID string) string {
+	safe := sanitizePathSegment(channel)
+	if safe == "" {
+		safe = sanitizePathSegment(userID)
+	}
+	if safe == "" {
+		safe = "default"
+	}
+	return filepath.Join(a.directory, safe)
+}
+
+func sanitizePathSegment(s string) string {
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, "..", "_")
+	return strings.TrimSpace(s)
 }
 
 func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
@@ -103,50 +140,19 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	slog.Debug("Received message from OpenCode", "channel", msg.Channel, "content", msg.Content, "files", msg.Files)
 
-	// 处理 /reset：重置当前上下文对应的 Session，并不下发到 OpenCode
-	if strings.TrimSpace(msg.Content) == "/reset" {
-		oldID, newID, err := a.resetSession(ctx, msg.Channel)
-		if err != nil {
-			slog.Error("Failed to reset session", "channel", msg.Channel, "err", err)
-		}
-
-		var resetMsg string
-		if err != nil {
-			resetMsg = fmt.Sprintf("重置会话失败: %v", err)
-		} else {
-			resetMsg = "已重置当前对话上下文，新的 Session 已创建。"
-		}
-
-		// 如果有旧的 / 新的 sessionID，记录到日志文件中
-		if oldID != "" || newID != "" {
-			a.logSessionEvent(oldID, "SESSION_RESET_OLD channel=%s new_session=%s", msg.Channel, newID)
-			a.logSessionEvent(newID, "SESSION_RESET_NEW channel=%s old_session=%s", msg.Channel, oldID)
-		}
-
-		// 选择目标适配器：优先使用默认目标
-		targetAdapter := msg.SourceAdapter
-		if dt := a.GetDefaultTarget(); dt != "" {
-			targetAdapter = dt
-		}
-
-		reply := mybot.Message{
-			ID:            fmt.Sprintf("oc-reset-%d", time.Now().UnixNano()),
-			ParentID:      msg.ID,
-			SourceAdapter: a.id,
-			TargetAdapter: targetAdapter,
-			Content:       resetMsg,
-			Type:          mybot.TypeText,
-			Timestamp:     time.Now().UnixMilli(),
-			UserID:        "opencode",
-			Channel:       msg.Channel,
-		}
-
-		select {
-		case a.inbound <- reply:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	workdir := a.workdirForChannel(msg.Channel, msg.UserID)
+	if err := os.MkdirAll(workdir, 0755); err != nil {
+		slog.Error("Failed to create channel workdir", "channel", msg.Channel, "workdir", workdir, "err", err)
 		return err
+	}
+	ctx = context.WithValue(ctx, workdirContextKey, workdir)
+
+	handled, err := a.handleCommand(ctx, msg)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
 	}
 
 	sessionID, err := a.getOrCreateSession(ctx, msg.Channel)
@@ -155,7 +161,7 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 		return err
 	}
 
-	files, err := a.ensureFilesInDirectory(ctx, msg.Channel, msg.Files)
+	files, err := a.ensureFilesInDirectory(ctx, msg.Files)
 	if err != nil {
 		slog.Error("Failed to ensure files in directory", "channel", msg.Channel, "err", err)
 		return err
@@ -163,20 +169,27 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	parts := a.buildParts(msg.Content, files)
 
 	// 记录请求日志
-	a.logSessionEvent(sessionID, "REQUEST channel=%s content=%q files=%d", msg.Channel, msg.Content, len(files))
+	a.logSessionEvent(ctx, sessionID, "REQUEST channel=%s content=%q files=%d", msg.Channel, msg.Content, len(files))
 
+	beforePrompt := time.Now()
 	resp, err := a.prompt(ctx, sessionID, parts)
 	if err != nil {
 		slog.Error("Failed to get response from OpenCode", "channel", msg.Channel, "err", err)
-		a.logSessionEvent(sessionID, "RESPONSE_ERROR channel=%s error=%v", msg.Channel, err)
+		a.logSessionEvent(ctx, sessionID, "RESPONSE_ERROR channel=%s error=%v", msg.Channel, err)
 		return err
 	}
 	slog.Debug("Received response from OpenCode", "channel", msg.Channel, "response", resp)
 
 	content := a.collectTextParts(resp.Parts)
+	replyFiles := a.collectFileParts(resp.Parts)
+	// 补充工作目录中本次请求后新产生或修改的文件（如 agent 创建的 hello.txt），供 webchat 展示下载
+	newFiles := a.listWorkdirFilesModifiedAfter(a.getWorkdir(ctx), beforePrompt)
+	for _, f := range newFiles {
+		replyFiles = append(replyFiles, f)
+	}
 
 	// 记录回复日志（只记录文本部分的汇总）
-	a.logSessionEvent(sessionID, "RESPONSE channel=%s content=%q", msg.Channel, content)
+	a.logSessionEvent(ctx, sessionID, "RESPONSE channel=%s content=%q files=%d", msg.Channel, content, len(replyFiles))
 
 	// 如果消息没有明确的目标适配器，但当前适配器有默认目标，则使用默认目标
 	targetAdapter := msg.SourceAdapter
@@ -195,6 +208,7 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 		Timestamp:     time.Now().UnixMilli(),
 		UserID:        "opencode",
 		Channel:       msg.Channel,
+		Files:         replyFiles,
 	}
 
 	select {
@@ -299,11 +313,11 @@ func startOpencode(ctx context.Context, bin, workDir string) (listenURL string, 
 	return "", nil, fmt.Errorf("timeout waiting for opencode server to start")
 }
 
-func (a *Adapter) ensureFilesInDirectory(ctx context.Context, channel string, files []mybot.File) ([]mybot.File, error) {
+func (a *Adapter) ensureFilesInDirectory(ctx context.Context, files []mybot.File) ([]mybot.File, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}
-	dir := filepath.Join(a.directory, uploadsDir, channel)
+	dir := filepath.Join(a.getWorkdir(ctx), uploadsDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
@@ -381,7 +395,7 @@ func (a *Adapter) getOrCreateSession(ctx context.Context, channel string) (strin
 	sid, ok := a.sessions[channel]
 	a.mu.RUnlock()
 	if ok {
-		a.logSessionEvent(sid, "REUSE_SESSION channel=%s directory=%s", channel, a.directory)
+		a.logSessionEvent(ctx, sid, "REUSE_SESSION channel=%s directory=%s", channel, a.getWorkdir(ctx))
 		return sid, nil
 	}
 
@@ -396,13 +410,33 @@ func (a *Adapter) getOrCreateSession(ctx context.Context, channel string) (strin
 	return sid, nil
 }
 
+// sessionPermission 创建 Session 时使用的权限规则。allowExecute 为 true 时允许写文件(edit)与执行命令(bash)；始终禁止交互式 question/plan。
+func (a *Adapter) sessionPermission() []map[string]string {
+	rules := []map[string]string{
+		{"permission": "question", "pattern": "*", "action": "deny"},
+		{"permission": "plan_enter", "pattern": "*", "action": "deny"},
+		{"permission": "plan_exit", "pattern": "*", "action": "deny"},
+	}
+	if a.allowExecute {
+		rules = append(rules,
+			map[string]string{"permission": "bash", "pattern": "*", "action": "allow"},
+			map[string]string{"permission": "edit", "pattern": "*", "action": "allow"},
+		)
+	}
+	return rules
+}
+
 // createSession 创建新的 OpenCode Session，不写入缓存映射，由调用方决定是否缓存。
 func (a *Adapter) createSession(ctx context.Context, channel string) (string, error) {
-	body := map[string]interface{}{"title": "channel:" + channel}
+	body := map[string]interface{}{
+		"title":      "channel:" + channel,
+		"permission": a.sessionPermission(),
+	}
 	reqBody, _ := json.Marshal(body)
+	dir := a.getWorkdir(ctx)
 	u := a.baseURL + "/session"
-	if a.directory != "" {
-		u += "?directory=" + url.QueryEscape(a.directory)
+	if dir != "" {
+		u += "?directory=" + url.QueryEscape(dir)
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(reqBody))
 	if err != nil {
@@ -434,11 +468,11 @@ func (a *Adapter) createSession(ctx context.Context, channel string) (string, er
 	}
 
 	// 记录创建 Session 的日志
-	a.logSessionEvent(ses.ID, "CREATE_SESSION channel=%s directory=%s", channel, a.directory)
+	a.logSessionEvent(ctx, ses.ID, "CREATE_SESSION channel=%s directory=%s", channel, dir)
 	return ses.ID, nil
 }
 
-// resetSession 删除旧 Session（若存在）并创建新的 Session，更新 channel→sessionID 映射。
+// resetSession 创建新的 Session，更新 channel→sessionID 映射。
 func (a *Adapter) resetSession(ctx context.Context, channel string) (oldID, newID string, err error) {
 	a.mu.RLock()
 	oldID = a.sessions[channel]
@@ -456,12 +490,167 @@ func (a *Adapter) resetSession(ctx context.Context, channel string) (oldID, newI
 	return oldID, newID, nil
 }
 
-// logSessionEvent 将交互记录写入工作目录下 logs/session_id.log
-func (a *Adapter) logSessionEvent(sessionID, format string, args ...interface{}) {
-	if sessionID == "" || a.directory == "" {
+// handleCommand 解析并处理斜杠命令（/reset、/init、/history 等），若为命令则处理并返回 (true, nil)，否则返回 (false, nil)。
+func (a *Adapter) handleCommand(ctx context.Context, msg mybot.Message) (bool, error) {
+	cmd := strings.TrimSpace(msg.Content)
+	if cmd == "" || !strings.HasPrefix(cmd, "/") {
+		return false, nil
+	}
+	parts := strings.Fields(cmd)
+	verb := parts[0]
+
+	switch verb {
+	case "/reset":
+		return true, a.handleReset(ctx, msg)
+	case "/init":
+		return true, a.handleInit(ctx, msg)
+	case "/history":
+		return true, a.handleHistory(ctx, msg)
+	default:
+		_ = a.sendCommandReply(ctx, msg, "未知命令。支持: /reset（清理会话）、/init（初始化 agent.md）、/history（查询会话历史）")
+		return true, nil
+	}
+}
+
+func (a *Adapter) sendCommandReply(ctx context.Context, msg mybot.Message, content string) error {
+	targetAdapter := msg.SourceAdapter
+	if dt := a.GetDefaultTarget(); dt != "" {
+		targetAdapter = dt
+	}
+	reply := mybot.Message{
+		ID:            fmt.Sprintf("oc-cmd-%d", time.Now().UnixNano()),
+		ParentID:      msg.ID,
+		SourceAdapter: a.id,
+		TargetAdapter: targetAdapter,
+		Content:       content,
+		Type:          mybot.TypeText,
+		Timestamp:     time.Now().UnixMilli(),
+		UserID:        "opencode",
+		Channel:       msg.Channel,
+	}
+	select {
+	case a.inbound <- reply:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *Adapter) handleReset(ctx context.Context, msg mybot.Message) error {
+	oldID, newID, err := a.resetSession(ctx, msg.Channel)
+	if err != nil {
+		slog.Error("Failed to reset session", "channel", msg.Channel, "err", err)
+	}
+	var content string
+	if err != nil {
+		content = fmt.Sprintf("重置会话失败: %v", err)
+	} else {
+		content = "已重置当前对话上下文，新的 Session 已创建。"
+	}
+	if oldID != "" || newID != "" {
+		a.logSessionEvent(ctx, oldID, "SESSION_RESET_OLD channel=%s new_session=%s", msg.Channel, newID)
+		a.logSessionEvent(ctx, newID, "SESSION_RESET_NEW channel=%s old_session=%s", msg.Channel, oldID)
+	}
+	return a.sendCommandReply(ctx, msg, content)
+}
+
+func (a *Adapter) handleInit(ctx context.Context, msg mybot.Message) error {
+	sessionID, err := a.getOrCreateSession(ctx, msg.Channel)
+	if err != nil {
+		slog.Error("Failed to get or create session for init", "channel", msg.Channel, "err", err)
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("初始化失败: 无法获取会话 (%v)", err))
+	}
+	dir := a.getWorkdir(ctx)
+	u := a.baseURL + "/session/" + sessionID + "/init"
+	if dir != "" {
+		u += "?directory=" + url.QueryEscape(dir)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(nil))
+	if err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("初始化请求构建失败: %v", err))
+	}
+	a.setAuth(req)
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("初始化请求失败: %v", err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("初始化 agent.md 失败: %d %s", resp.StatusCode, string(b)))
+	}
+	a.logSessionEvent(ctx, sessionID, "INIT channel=%s", msg.Channel)
+	return a.sendCommandReply(ctx, msg, "已初始化 agent.md，当前会话将使用新的 Agent 配置。")
+}
+
+func (a *Adapter) handleHistory(ctx context.Context, msg mybot.Message) error {
+	sessionID, err := a.getOrCreateSession(ctx, msg.Channel)
+	if err != nil {
+		slog.Error("Failed to get or create session for history", "channel", msg.Channel, "err", err)
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("查询历史失败: 无法获取会话 (%v)", err))
+	}
+	dir := a.getWorkdir(ctx)
+	u := a.baseURL + "/session/" + sessionID + "/message?limit=20"
+	if dir != "" {
+		u += "&directory=" + url.QueryEscape(dir)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("请求历史失败: %v", err))
+	}
+	a.setAuth(req)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("请求历史失败: %v", err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("获取会话历史失败: %d %s", resp.StatusCode, string(b)))
+	}
+	// OpenCode API: GET /session/{id}/message 返回 Array<{ info: Message, parts: Part[] }>
+	var list []struct {
+		Info struct {
+			Role string `json:"role"`
+		} `json:"info"`
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("解析历史数据失败: %v", err))
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("当前 Session: %s\n最近 %d 条消息:\n", sessionID, len(list)))
+	for i, m := range list {
+		var text string
+		for _, p := range m.Parts {
+			if p.Type == "text" && p.Text != "" {
+				text = p.Text
+				if len(text) > 200 {
+					text = text[:200] + "..."
+				}
+				break
+			}
+		}
+		b.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, m.Info.Role, text))
+	}
+	if len(list) == 0 {
+		b.WriteString("（暂无消息）")
+	}
+	return a.sendCommandReply(ctx, msg, strings.TrimSuffix(b.String(), "\n"))
+}
+
+// logSessionEvent 将交互记录写入当前请求工作目录（ctx）下的 logs/session_id.log
+func (a *Adapter) logSessionEvent(ctx context.Context, sessionID, format string, args ...interface{}) {
+	dir := a.getWorkdir(ctx)
+	if sessionID == "" || dir == "" {
 		return
 	}
-	logsDir := filepath.Join(a.directory, "logs")
+	logsDir := filepath.Join(dir, "logs")
 	if err := os.MkdirAll(logsDir, 0755); err != nil {
 		slog.Error("Failed to create logs directory", "dir", logsDir, "err", err)
 		return
@@ -511,9 +700,10 @@ func (a *Adapter) prompt(ctx context.Context, sessionID string, parts []map[stri
 		return nil, err
 	}
 
+	dir := a.getWorkdir(ctx)
 	u := a.baseURL + "/session/" + sessionID + "/message"
-	if a.directory != "" {
-		u += "?directory=" + url.QueryEscape(a.directory)
+	if dir != "" {
+		u += "?directory=" + url.QueryEscape(dir)
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(reqBody))
 	if err != nil {
@@ -565,12 +755,98 @@ func (a *Adapter) collectTextParts(parts []partSchema) string {
 	return b.String()
 }
 
+// collectFileParts 从 OpenCode 响应的 parts 中收集附件：顶层 type=file 的 part，以及 type=tool 的 state.attachments（工具返回的生成文件）。
+func (a *Adapter) collectFileParts(parts []partSchema) []mybot.File {
+	out := make([]mybot.File, 0)
+	for _, p := range parts {
+		if p.Type == "file" && p.URL != "" {
+			out = append(out, filePartToMybot(p.Filename, p.URL, p.Mime, p.Size))
+			continue
+		}
+		if p.Type == "tool" && p.State != nil {
+			for _, att := range p.State.Attachments {
+				if att.URL == "" {
+					continue
+				}
+				out = append(out, filePartToMybot(att.Filename, att.URL, att.Mime, 0))
+			}
+		}
+	}
+	return out
+}
+
+func filePartToMybot(filename, url, mime string, size int64) mybot.File {
+	name := filename
+	if name == "" {
+		name = filepath.Base(url)
+	}
+	if name == "" || name == "." {
+		name = "file"
+	}
+	return mybot.File{Name: name, URL: url, MimeType: mime, Size: size}
+}
+
+// listWorkdirFilesModifiedAfter 扫描 workdir 下在 after 之后有修改的普通文件，排除 uploads、logs 等目录，返回 mybot.File 列表（file:// URL）。
+func (a *Adapter) listWorkdirFilesModifiedAfter(workdir string, after time.Time) []mybot.File {
+	if workdir == "" {
+		return nil
+	}
+	absWorkdir, err := filepath.Abs(workdir)
+	if err != nil {
+		return nil
+	}
+	out := make([]mybot.File, 0)
+	skipDirs := map[string]bool{uploadsDir: true, "logs": true, ".ruff_cache": true}
+	filepath.WalkDir(absWorkdir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(absWorkdir, path)
+		if rel == "." {
+			return nil
+		}
+		base := filepath.Base(rel)
+		firstSeg := strings.Split(rel, string(filepath.Separator))[0]
+		if skipDirs[firstSeg] || skipDirs[base] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.ModTime().Before(after) || info.ModTime().Equal(after) {
+			return nil
+		}
+		out = append(out, mybot.File{
+			Name: filepath.Base(path),
+			URL:  "file://" + filepath.ToSlash(path),
+			Size: info.Size(),
+		})
+		return nil
+	})
+	return out
+}
+
 type promptResponse struct {
 	Info  map[string]interface{} `json:"info"`
 	Parts []partSchema           `json:"parts"`
 }
 
 type partSchema struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Filename string `json:"filename"`
+	Mime     string `json:"mime"`
+	URL      string `json:"url"`
+	Size     int64  `json:"size"`
+	State    *struct {
+		Attachments []struct {
+			URL      string `json:"url"`
+			Filename string `json:"filename"`
+			Mime     string `json:"mime"`
+		} `json:"attachments"`
+	} `json:"state,omitempty"`
 }

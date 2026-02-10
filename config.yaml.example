@@ -31,6 +31,7 @@ adapters:
     # base_url: "http://localhost:3000"
     # opencode_bin: "opencode"
     # api_key: ""
+    # allow_execute: true  # 为 true（默认）时允许写文件与执行命令（如写并运行 Python），设为 false 则仅对话
 
   # Lark 适配器：接入飞书/Lark 机器人
   - id: "lark_bot"

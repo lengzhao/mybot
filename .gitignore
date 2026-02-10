@@ -37,3 +37,4 @@ mybot
 .env
 config.yaml
 tmp/
+.DS_Store
