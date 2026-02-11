@@ -117,6 +117,51 @@ func sanitizePathSegment(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// sessionFilePath 返回该 channel 对应工作目录下的 .session 文件路径，用于持久化 channel→sessionID 映射。
+func (a *Adapter) sessionFilePath(channel string) string {
+	return filepath.Join(a.workdirForChannel(channel, ""), ".session")
+}
+
+// sessionState 持久化在 .session 文件中的 JSON 结构：当前 session 与历史列表。
+type sessionState struct {
+	Current string   `json:"current"`
+	History []string `json:"history"`
+}
+
+func (a *Adapter) loadSessionFromFile(channel string) (string, bool) {
+	state, ok := a.loadSessionState(channel)
+	if !ok {
+		return "", false
+	}
+	return state.Current, true
+}
+
+func (a *Adapter) loadSessionState(channel string) (sessionState, bool) {
+	path := a.sessionFilePath(channel)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sessionState{}, false
+	}
+	var state sessionState
+	if err := json.Unmarshal(data, &state); err == nil && state.Current != "" {
+		return state, true
+	}
+	return sessionState{}, false
+}
+
+func (a *Adapter) saveSessionToFile(channel, current string, history []string) error {
+	dir := filepath.Dir(a.sessionFilePath(channel))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	state := sessionState{Current: current, History: history}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(a.sessionFilePath(channel), data, 0644)
+}
+
 func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {
 	a.inbound = inbound
 	if a.baseURL != "" {
@@ -398,6 +443,14 @@ func (a *Adapter) getOrCreateSession(ctx context.Context, channel string) (strin
 		a.logSessionEvent(ctx, sid, "REUSE_SESSION channel=%s directory=%s", channel, a.getWorkdir(ctx))
 		return sid, nil
 	}
+	// 内存未命中时从 workdir 下的 .session 文件恢复
+	if sid, ok = a.loadSessionFromFile(channel); ok {
+		a.mu.Lock()
+		a.sessions[channel] = sid
+		a.mu.Unlock()
+		a.logSessionEvent(ctx, sid, "REUSE_SESSION channel=%s directory=%s (from .session)", channel, a.getWorkdir(ctx))
+		return sid, nil
+	}
 
 	sid, err := a.createSession(ctx, channel)
 	if err != nil {
@@ -407,19 +460,45 @@ func (a *Adapter) getOrCreateSession(ctx context.Context, channel string) (strin
 	a.mu.Lock()
 	a.sessions[channel] = sid
 	a.mu.Unlock()
+	if err := a.saveSessionToFile(channel, sid, nil); err != nil {
+		slog.Warn("Failed to persist session to .session", "channel", channel, "err", err)
+	}
 	return sid, nil
 }
 
-// sessionPermission 创建 Session 时使用的权限规则。allowExecute 为 true 时允许写文件(edit)与执行命令(bash)；始终禁止交互式 question/plan。
+// sessionPermission 创建 Session 时使用的权限规则。
+// 目标：API 调用时 opencode 直接处理、不中断、必有响应（不出现等待用户点允许/回答的阻塞）。
+//
+// 策略：所有会用到的能力一律 allow；会阻塞的 question/plan 一律 deny；doom_loop 设为 allow 避免重复 3 次时弹确认。
 func (a *Adapter) sessionPermission() []map[string]string {
 	rules := []map[string]string{
+		{"permission": "read", "pattern": "*", "action": "allow"},
+		{"permission": "glob", "pattern": "*", "action": "allow"},
+		{"permission": "grep", "pattern": "*", "action": "allow"},
+		{"permission": "list", "pattern": "*", "action": "allow"},
+		{"permission": "lsp", "pattern": "*", "action": "allow"},
+		{"permission": "todowrite", "pattern": "*", "action": "allow"},
+		{"permission": "todoread", "pattern": "*", "action": "allow"},
 		{"permission": "question", "pattern": "*", "action": "deny"},
 		{"permission": "plan_enter", "pattern": "*", "action": "deny"},
 		{"permission": "plan_exit", "pattern": "*", "action": "deny"},
+		{"permission": "doom_loop", "pattern": "*", "action": "allow"},
+		{"permission": "skill", "pattern": "*", "action": "allow"},
+		{"permission": "task", "pattern": "*", "action": "allow"},
+		{"permission": "webfetch", "pattern": "*", "action": "allow"},
+		{"permission": "websearch", "pattern": "*", "action": "allow"},
+		{"permission": "codesearch", "pattern": "*", "action": "allow"},
+		{"permission": "external_directory", "pattern": "*", "action": "allow"},
 	}
 	if a.allowExecute {
+		// bash: 先允许全部，再拒绝 rm 等破坏性命令（后匹配优先）
 		rules = append(rules,
 			map[string]string{"permission": "bash", "pattern": "*", "action": "allow"},
+			map[string]string{"permission": "bash", "pattern": "rm", "action": "deny"},
+			map[string]string{"permission": "bash", "pattern": "rm *", "action": "deny"},
+			map[string]string{"permission": "bash", "pattern": "rm -rf *", "action": "deny"},
+			map[string]string{"permission": "bash", "pattern": "rm -r *", "action": "deny"},
+			map[string]string{"permission": "bash", "pattern": "/bin/rm*", "action": "deny"},
 			map[string]string{"permission": "edit", "pattern": "*", "action": "allow"},
 		)
 	}
@@ -486,7 +565,13 @@ func (a *Adapter) resetSession(ctx context.Context, channel string) (oldID, newI
 	a.mu.Lock()
 	a.sessions[channel] = newID
 	a.mu.Unlock()
-
+	history := []string{}
+	if old, ok := a.loadSessionState(channel); ok && old.Current != "" {
+		history = append(append([]string{}, old.History...), old.Current)
+	}
+	if err := a.saveSessionToFile(channel, newID, history); err != nil {
+		slog.Warn("Failed to persist session to .session after reset", "channel", channel, "err", err)
+	}
 	return oldID, newID, nil
 }
 
@@ -506,8 +591,10 @@ func (a *Adapter) handleCommand(ctx context.Context, msg mybot.Message) (bool, e
 		return true, a.handleInit(ctx, msg)
 	case "/history":
 		return true, a.handleHistory(ctx, msg)
+	case "/plan", "/status":
+		return true, a.handlePlan(ctx, msg)
 	default:
-		_ = a.sendCommandReply(ctx, msg, "未知命令。支持: /reset（清理会话）、/init（初始化 agent.md）、/history（查询会话历史）")
+		_ = a.sendCommandReply(ctx, msg, "未知命令。支持: /reset（清理会话）、/init（初始化 agent.md）、/history（查询会话历史）、/plan（查询会话状态与待办）")
 		return true, nil
 	}
 }
@@ -640,6 +727,106 @@ func (a *Adapter) handleHistory(ctx context.Context, msg mybot.Message) error {
 	}
 	if len(list) == 0 {
 		b.WriteString("（暂无消息）")
+	}
+	return a.sendCommandReply(ctx, msg, strings.TrimSuffix(b.String(), "\n"))
+}
+
+// handlePlan 查询当前会话状态：session 信息、运行状态、待办列表。
+func (a *Adapter) handlePlan(ctx context.Context, msg mybot.Message) error {
+	sessionID, err := a.getOrCreateSession(ctx, msg.Channel)
+	if err != nil {
+		slog.Error("Failed to get or create session for plan", "channel", msg.Channel, "err", err)
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("查询状态失败: 无法获取会话 (%v)", err))
+	}
+	dir := a.getWorkdir(ctx)
+	q := ""
+	if dir != "" {
+		q = "?directory=" + url.QueryEscape(dir)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	// GET session 详情
+	uSession := a.baseURL + "/session/" + sessionID + q
+	reqSession, _ := http.NewRequestWithContext(ctx, "GET", uSession, nil)
+	a.setAuth(reqSession)
+	respSession, err := client.Do(reqSession)
+	if err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("获取会话详情失败: %v", err))
+	}
+	defer respSession.Body.Close()
+	var session struct {
+		ID        string `json:"id"`
+		Directory string `json:"directory"`
+		ParentID  string `json:"parentID"`
+		ProjectID string `json:"projectID"`
+		Summary   *struct {
+			Additions int `json:"additions"`
+			Deletions int `json:"deletions"`
+			Files     int `json:"files"`
+		} `json:"summary"`
+	}
+	_ = json.NewDecoder(respSession.Body).Decode(&session)
+
+	// GET 运行状态
+	uStatus := a.baseURL + "/session/status"
+	if dir != "" {
+		uStatus += "?directory=" + url.QueryEscape(dir)
+	}
+	reqStatus, _ := http.NewRequestWithContext(ctx, "GET", uStatus, nil)
+	a.setAuth(reqStatus)
+	respStatus, err := client.Do(reqStatus)
+	if err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("获取会话状态失败: %v", err))
+	}
+	defer respStatus.Body.Close()
+	var statusMap map[string]struct {
+		Type    string  `json:"type"`
+		Attempt *int    `json:"attempt,omitempty"`
+		Message *string `json:"message,omitempty"`
+		Next    *int    `json:"next,omitempty"`
+	}
+	_ = json.NewDecoder(respStatus.Body).Decode(&statusMap)
+	statusStr := "unknown"
+	if st, ok := statusMap[sessionID]; ok {
+		statusStr = st.Type
+		if st.Type == "retry" && st.Message != nil {
+			statusStr += " (" + *st.Message + ")"
+		}
+	}
+
+	// GET 待办
+	uTodo := a.baseURL + "/session/" + sessionID + "/todo" + q
+	reqTodo, _ := http.NewRequestWithContext(ctx, "GET", uTodo, nil)
+	a.setAuth(reqTodo)
+	respTodo, err := client.Do(reqTodo)
+	if err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("获取待办失败: %v", err))
+	}
+	defer respTodo.Body.Close()
+	var todos []struct {
+		ID       string `json:"id"`
+		Content  string `json:"content"`
+		Status   string `json:"status"`
+		Priority string `json:"priority"`
+	}
+	_ = json.NewDecoder(respTodo.Body).Decode(&todos)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("**Session 状态**\n- ID: %s\n- 工作目录: %s\n- 运行状态: %s\n", sessionID, session.Directory, statusStr))
+	if session.Summary != nil {
+		b.WriteString(fmt.Sprintf("- 变更摘要: +%d -%d (%d 文件)\n", session.Summary.Additions, session.Summary.Deletions, session.Summary.Files))
+	}
+	b.WriteString("\n**待办**\n")
+	if len(todos) == 0 {
+		b.WriteString("（无）")
+	} else {
+		for i, t := range todos {
+			icon := "[ ]"
+			if t.Status == "completed" || t.Status == "cancelled" {
+				icon = "[x]"
+			}
+			b.WriteString(fmt.Sprintf("%d. %s %s (%s)\n", i+1, icon, t.Content, t.Status))
+		}
 	}
 	return a.sendCommandReply(ctx, msg, strings.TrimSuffix(b.String(), "\n"))
 }
@@ -785,7 +972,7 @@ func filePartToMybot(filename, url, mime string, size int64) mybot.File {
 	return mybot.File{Name: name, URL: url, MimeType: mime, Size: size}
 }
 
-// listWorkdirFilesModifiedAfter 扫描 workdir 下在 after 之后有修改的普通文件，排除 uploads、logs 等目录，返回 mybot.File 列表（file:// URL）。
+// listWorkdirFilesModifiedAfter 扫描 workdir 下在 after 之后有修改的普通文件，排除 logs 等目录；包含 uploads（agent 常把生成文件写到 uploads），返回 mybot.File 列表（file:// URL）。
 func (a *Adapter) listWorkdirFilesModifiedAfter(workdir string, after time.Time) []mybot.File {
 	if workdir == "" {
 		return nil
@@ -795,7 +982,7 @@ func (a *Adapter) listWorkdirFilesModifiedAfter(workdir string, after time.Time)
 		return nil
 	}
 	out := make([]mybot.File, 0)
-	skipDirs := map[string]bool{uploadsDir: true, "logs": true, ".ruff_cache": true}
+	skipDirs := map[string]bool{"logs": true, ".ruff_cache": true, "node_modules": true}
 	filepath.WalkDir(absWorkdir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil

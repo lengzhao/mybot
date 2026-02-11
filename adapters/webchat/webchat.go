@@ -336,7 +336,7 @@ func (w *Adapter) readPump(client *Client) {
 		// 生成唯一消息ID
 		msgID := w.generateMessageID()
 
-		// 创建消息
+		// 创建消息（将 /files/:id 转为 file:// 绝对路径，下游无需再走 HTTP）
 		msg := mybot.Message{
 			ID:            msgID,
 			SourceAdapter: w.id,
@@ -346,7 +346,7 @@ func (w *Adapter) readPump(client *Client) {
 			Content:       msgReq.Content,
 			Type:          mybot.TypeText,
 			Timestamp:     time.Now().UnixMilli(),
-			Files:         msgReq.Files,
+			Files:         w.resolveOutboundFiles(msgReq.Files),
 			Extra:         msgReq.Extra,
 		}
 
@@ -431,7 +431,7 @@ func (w *Adapter) handlePostSend(rw http.ResponseWriter, r *http.Request) {
 	// 生成唯一消息ID
 	msgID := w.generateMessageID()
 
-	// 创建消息
+	// 创建消息（将 /files/:id 转为 file:// 绝对路径，下游无需再走 HTTP）
 	msg := mybot.Message{
 		ID:            msgID,
 		SourceAdapter: w.id,
@@ -441,7 +441,7 @@ func (w *Adapter) handlePostSend(rw http.ResponseWriter, r *http.Request) {
 		Content:       req.Content,
 		Type:          mybot.TypeText,
 		Timestamp:     time.Now().UnixMilli(),
-		Files:         req.Files,
+		Files:         w.resolveOutboundFiles(req.Files),
 		Extra:         req.Extra,
 	}
 
@@ -534,6 +534,49 @@ func (w *Adapter) requestBaseURL(r *http.Request) string {
 		scheme = s
 	}
 	return scheme + "://" + r.Host
+}
+
+// resolveOutboundFiles 将消息里指向本适配器 /files/:id 的 URL 转为本地绝对路径 file://，便于下游（如 opencode）直接读文件而无需 HTTP。
+func (w *Adapter) resolveOutboundFiles(files []mybot.File) []mybot.File {
+	if len(files) == 0 {
+		return files
+	}
+	out := make([]mybot.File, 0, len(files))
+	for _, f := range files {
+		u, err := url.Parse(f.URL)
+		if err != nil {
+			out = append(out, f)
+			continue
+		}
+		// 只处理 path 为 /files/:id 的形式（含 http(s) 或相对路径）
+		path := strings.TrimPrefix(strings.TrimSuffix(u.Path, "/"), "/")
+		if !strings.HasPrefix(path, "files/") {
+			out = append(out, f)
+			continue
+		}
+		id := strings.TrimPrefix(path, "files/")
+		if id == "" || strings.Contains(id, "/") || strings.Contains(id, "..") {
+			out = append(out, f)
+			continue
+		}
+		localPath := filepath.Join(w.uploadDir, id)
+		absPath, err := filepath.Abs(localPath)
+		if err != nil {
+			out = append(out, f)
+			continue
+		}
+		if _, err := os.Stat(absPath); err != nil {
+			out = append(out, f)
+			continue
+		}
+		out = append(out, mybot.File{
+			Name:     f.Name,
+			URL:      "file://" + filepath.ToSlash(absPath),
+			MimeType: f.MimeType,
+			Size:     f.Size,
+		})
+	}
+	return out
 }
 
 // handleFileServe 提供已上传文件的下载
