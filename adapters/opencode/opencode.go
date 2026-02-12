@@ -194,6 +194,7 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 
 	handled, err := a.handleCommand(ctx, msg)
 	if err != nil {
+		slog.Error("Failed to handle command", "channel", msg.Channel, "err", err)
 		return err
 	}
 	if handled {

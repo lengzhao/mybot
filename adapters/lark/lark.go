@@ -3,6 +3,7 @@ package lark
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	mybot "github.com/lengzhao/mybot"
@@ -22,6 +24,8 @@ import (
 	larkdrive "github.com/larksuite/oapi-sdk-go/v3/service/drive/v1"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 const uploadsDir = "uploads"
@@ -55,6 +59,220 @@ type Adapter struct {
 	botName   string
 	apiClient *lark.Client
 	wsClient  *larkws.Client
+	db       *gorm.DB
+	dbMu     sync.Mutex
+}
+
+// aclEntry 记录 Lark 侧的管理员和白名单信息。
+// - 若 UserID 不为空且 IsAdmin=true，则代表该用户是管理员；
+// - 若 Allowed=true：
+//   - 且 UserID 不为空、ChatID 为空：该用户在所有会话中允许；
+//   - 且 ChatID 不为空、UserID 为空：该会话中的所有用户允许；
+//   - 且 UserID 与 ChatID 都不为空：只允许该用户在该会话中使用。
+type aclEntry struct {
+	ID        uint      `gorm:"primaryKey"`
+	UserID    string    `gorm:"index"`
+	ChatID    string    `gorm:"index"`
+	IsAdmin   bool      `gorm:"index"`
+	Allowed   bool      `gorm:"index"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// initACL 初始化 / 打开 ACL 所在的 SQLite 数据库。
+func (a *Adapter) initACL() error {
+	a.dbMu.Lock()
+	defer a.dbMu.Unlock()
+
+	if a.db != nil {
+		return nil
+	}
+
+	// 优先使用适配器工作目录；若未配置，则退化到系统临时目录。
+	baseDir := a.directory
+	if baseDir == "" {
+		baseDir = filepath.Join(os.TempDir(), "mybot_lark")
+	}
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return fmt.Errorf("create acl dir: %w", err)
+	}
+
+	dbPath := filepath.Join(baseDir, fmt.Sprintf("lark_acl_%s.db", a.id))
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	if err != nil {
+		return fmt.Errorf("open acl db: %w", err)
+	}
+	if err := db.AutoMigrate(&aclEntry{}); err != nil {
+		return fmt.Errorf("migrate acl db: %w", err)
+	}
+
+	a.db = db
+	slog.Info("lark: acl db initialized", "adapter", a.id, "path", dbPath)
+	return nil
+}
+
+// ensureFirstAdmin 如果还没有管理员，则将当前用户设为首个管理员（同时加入白名单）。
+func (a *Adapter) ensureFirstAdmin(userID, chatID string) {
+	if userID == "" {
+		return
+	}
+	if err := a.initACL(); err != nil {
+		slog.Warn("lark: init ACL db failed when ensuring first admin", "err", err)
+		return
+	}
+
+	var count int64
+	if err := a.db.Model(&aclEntry{}).
+		Where("is_admin = ?", true).
+		Count(&count).Error; err != nil {
+		slog.Warn("lark: query admin count failed", "err", err)
+		return
+	}
+	if count > 0 {
+		return
+	}
+
+	entry := &aclEntry{
+		UserID:  userID,
+		ChatID:  chatID,
+		IsAdmin: true,
+		Allowed: true,
+	}
+	if err := a.db.Create(entry).Error; err != nil {
+		slog.Warn("lark: create first admin failed", "user_id", userID, "err", err)
+		return
+	}
+	slog.Info("lark: first admin created", "user_id", userID, "chat_id", chatID)
+}
+
+func (a *Adapter) isAdmin(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	if err := a.initACL(); err != nil {
+		slog.Warn("lark: init ACL db failed when checking admin", "err", err)
+		return false
+	}
+
+	var count int64
+	if err := a.db.Model(&aclEntry{}).
+		Where("user_id = ? AND is_admin = ?", userID, true).
+		Count(&count).Error; err != nil {
+		slog.Warn("lark: query admin failed", "err", err)
+		return false
+	}
+	return count > 0
+}
+
+func (a *Adapter) isAllowed(userID, chatID string) bool {
+	if err := a.initACL(); err != nil {
+		// 如果 ACL 系统都初始化不了，避免直接拒绝所有消息，这里选择放行并记录日志。
+		slog.Warn("lark: init ACL db failed when checking allow, fallback to allow", "err", err)
+		return true
+	}
+
+	// 管理员始终允许。
+	if a.isAdmin(userID) {
+		return true
+	}
+
+	if userID == "" && chatID == "" {
+		return false
+	}
+
+	var count int64
+	q := a.db.Model(&aclEntry{}).Where("allowed = ?", true).Where(
+		a.db.Where("user_id = ? AND (chat_id = '' OR chat_id = ?)", userID, chatID).
+			Or("chat_id = ? AND user_id = ''", chatID),
+	)
+	if err := q.Count(&count).Error; err != nil {
+		slog.Warn("lark: query allowed failed, fallback to allow", "err", err)
+		return true
+	}
+	return count > 0
+}
+
+// addChatToWhitelist 将当前会话加入白名单。
+func (a *Adapter) addChatToWhitelist(chatID string) error {
+	if chatID == "" {
+		return fmt.Errorf("empty chatID")
+	}
+	if err := a.initACL(); err != nil {
+		return err
+	}
+
+	var entry aclEntry
+	err := a.db.Where("chat_id = ? AND user_id = ''", chatID).First(&entry).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			entry = aclEntry{
+				UserID: "",
+				ChatID: chatID,
+				Allowed: true,
+			}
+			return a.db.Create(&entry).Error
+		}
+		return err
+	}
+	entry.Allowed = true
+	return a.db.Save(&entry).Error
+}
+
+// handleAdminCommand 处理管理员在 Lark 中发送的管理指令。
+// 当前支持：
+// - "#allow"：将当前会话加入白名单。
+// 返回值表示该消息是否被当作管理员指令消费（true 时不会再转发到调度中心）。
+func (a *Adapter) handleAdminCommand(ctx context.Context, userID, chatID, content string) bool {
+	if !a.isAdmin(userID) {
+		return false
+	}
+
+	content = strings.TrimSpace(content)
+	switch content {
+	case "#allow":
+		if err := a.addChatToWhitelist(chatID); err != nil {
+			slog.Warn("lark: add chat to whitelist failed", "chat_id", chatID, "err", err)
+			a.sendText(ctx, chatID, "添加白名单失败，请查看服务端日志")
+		} else {
+			a.sendText(ctx, chatID, "当前会话已加入白名单")
+		}
+		return true
+	}
+
+	return false
+}
+
+// sendText 直接向指定会话发送一条文本消息，用于权限提示等系统信息。
+func (a *Adapter) sendText(ctx context.Context, chatID, text string) {
+	if a.apiClient == nil || chatID == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+
+	contentStruct := struct {
+		Text string `json:"text"`
+	}{Text: text}
+	contentBytes, err := json.Marshal(contentStruct)
+	if err != nil {
+		return
+	}
+
+	req := larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType(larkim.ReceiveIdTypeChatId).
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			MsgType(larkim.MsgTypeText).
+			ReceiveId(chatID).
+			Content(string(contentBytes)).
+			Build()).
+		Build()
+
+	resp, err := a.apiClient.Im.V1.Message.Create(ctx, req)
+	if err != nil {
+		slog.Warn("lark: sendText failed", "chat_id", chatID, "err", err)
+		return
+	}
+	if !resp.Success() {
+		slog.Warn("lark: sendText failed", "chat_id", chatID, "code", resp.Code, "msg", resp.Msg)
+	}
 }
 
 // MessageText Lark 文本消息结构
@@ -156,9 +374,21 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 	msgType := larkcore.StringValue(msg.MessageType)
 	chatID := larkcore.StringValue(msg.ChatId)
 	userID := ""
-	if message.Event.Sender != nil && message.Event.Sender.SenderId != nil && message.Event.Sender.SenderId.UserId != nil {
-		userID = larkcore.StringValue(message.Event.Sender.SenderId.UserId)
+	if message.Event.Sender != nil && message.Event.Sender.SenderId != nil {
+		sid := message.Event.Sender.SenderId
+		// 优先使用 UserId，其次 OpenId，最后 UnionId，保证能拿到一个稳定的用户标识
+		if sid.UserId != nil && larkcore.StringValue(sid.UserId) != "" {
+			userID = larkcore.StringValue(sid.UserId)
+		} else if sid.OpenId != nil && larkcore.StringValue(sid.OpenId) != "" {
+			userID = larkcore.StringValue(sid.OpenId)
+		} else if sid.UnionId != nil && larkcore.StringValue(sid.UnionId) != "" {
+			userID = larkcore.StringValue(sid.UnionId)
+		}
 	}
+
+	// 确保首个管理员存在：第一条消息的发送者会被自动设为管理员并加入白名单。
+	a.ensureFirstAdmin(userID, chatID)
+
 	extra := map[string]interface{}{
 		"lark_chat_id":   chatID,
 		"lark_msg_id":    larkcore.StringValue(msg.MessageId),
@@ -173,6 +403,18 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 			slog.Error("lark: failed to unmarshal text content", "err", err)
 			return nil
 		}
+
+		// 优先处理管理员指令（不会转发到调度中心）
+		if a.handleAdminCommand(ctx, userID, chatID, textMsg.Text) {
+			return nil
+		}
+
+		// 非白名单用户 / 会话先拦截，不转发给调度中心。
+		if !a.isAllowed(userID, chatID) {
+			a.sendText(ctx, chatID, "你还未被授权使用此机器人，请联系管理员在当前会话发送 #allow 进行授权。")
+			return nil
+		}
+
 		mbMsg := mybot.Message{
 			ID:            larkcore.StringValue(msg.MessageId),
 			SourceAdapter: a.id,
@@ -191,6 +433,12 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 		return nil
 
 	case larkim.MsgTypeFile:
+		// 文件消息也需要通过白名单校验。
+		if !a.isAllowed(userID, chatID) {
+			a.sendText(ctx, chatID, "当前会话或用户尚未被授权接收文件消息，请联系管理员在会话中发送 #allow。")
+			return nil
+		}
+
 		fileMsg := new(larkim.MessageFile)
 		if err := json.Unmarshal([]byte(larkcore.StringValue(msg.Content)), fileMsg); err != nil || fileMsg.FileKey == "" {
 			slog.Warn("lark: invalid file message content", "err", err)
