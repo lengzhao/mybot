@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -55,7 +54,6 @@ func init() {
 		if opencodeBin == "" {
 			opencodeBin = "opencode"
 		}
-
 		var client *opencode.Client
 		if baseURL != "" {
 			opts := []option.RequestOption{option.WithBaseURL(baseURL)}
@@ -272,33 +270,83 @@ func startOpencode(ctx context.Context, bin, workDir string) (listenURL string, 
 	return "", nil, fmt.Errorf("timeout waiting for opencode server to start")
 }
 
-// publicOpencodeEventSummary 仅对需要关注的事件返回简短 type 与 key，否则返回 "", "" 以省略日志。
-func publicOpencodeEventSummary(u interface{}) (eventType, key string) {
-	t := reflect.TypeOf(u).String()
-	switch {
-	case strings.Contains(t, "PermissionUpdated"):
+const eventKeyMaxLen = 200
+
+// publicOpencodeEventSummary 基于真实事件类型返回 type 与关键内容；未识别类型返回 type 与 properties 摘要。
+func publicOpencodeEventSummary(ev opencode.EventListResponse) (eventType, key string) {
+	eventType = string(ev.Type)
+	u := ev.AsUnion()
+	switch ev.Type {
+	case opencode.EventListResponseTypePermissionUpdated:
 		if p, ok := u.(opencode.EventListResponseEventPermissionUpdated); ok && p.Properties.SessionID != "" {
-			return "permission.updated", p.Properties.SessionID + "/" + p.Properties.ID
+			return eventType, p.Properties.SessionID + "/" + p.Properties.ID
 		}
-		return "permission.updated", ""
-	case strings.Contains(t, "SessionIdle"):
+		return eventType, ""
+	case opencode.EventListResponseTypeSessionIdle:
 		if e, ok := u.(opencode.EventListResponseEventSessionIdle); ok {
-			return "session.idle", e.Properties.SessionID
+			return eventType, e.Properties.SessionID
 		}
-		return "session.idle", ""
-	case strings.Contains(t, "FileEdited"):
+		return eventType, ""
+	case opencode.EventListResponseTypeFileEdited:
 		if e, ok := u.(opencode.EventListResponseEventFileEdited); ok {
-			return "file.edited", e.Properties.File
+			return eventType, e.Properties.File
 		}
-		return "file.edited", ""
-	case strings.Contains(t, "FileWatcherUpdated"):
+		return eventType, ""
+	case opencode.EventListResponseTypeFileWatcherUpdated:
 		if e, ok := u.(opencode.EventListResponseEventFileWatcherUpdated); ok {
-			return "file.watcher.updated", fmt.Sprint(e.Properties.Event) + " " + e.Properties.File
+			return eventType, fmt.Sprint(e.Properties.Event) + " " + e.Properties.File
 		}
-		return "file.watcher.updated", ""
+		return eventType, ""
+	case opencode.EventListResponseTypeSessionUpdated:
+		if e, ok := u.(opencode.EventListResponseEventSessionUpdated); ok && e.Properties.Info.ID != "" {
+			return eventType, e.Properties.Info.ID
+		}
+		return eventType, ""
+	case opencode.EventListResponseTypeSessionCreated:
+		if e, ok := u.(opencode.EventListResponseEventSessionCreated); ok && e.Properties.Info.ID != "" {
+			return eventType, e.Properties.Info.ID
+		}
+		return eventType, ""
+	case opencode.EventListResponseTypeSessionDeleted:
+		if e, ok := u.(opencode.EventListResponseEventSessionDeleted); ok {
+			return eventType, e.Properties.Info.ID
+		}
+		return eventType, ""
+	case opencode.EventListResponseTypeSessionError:
+		if e, ok := u.(opencode.EventListResponseEventSessionError); ok {
+			return eventType, e.Properties.SessionID
+		}
+		return eventType, ""
+	case opencode.EventListResponseTypeMessageUpdated:
+		if e, ok := u.(opencode.EventListResponseEventMessageUpdated); ok && e.Properties.Info.ID != "" {
+			return eventType, e.Properties.Info.ID
+		}
+		return eventType, ""
+	case opencode.EventListResponseTypeMessagePartUpdated:
+		if e, ok := u.(opencode.EventListResponseEventMessagePartUpdated); ok && e.Properties.Part.ID != "" {
+			return eventType, fmt.Sprint(e.Properties.Part.Type) + " " + e.Properties.Part.ID
+		}
+		return eventType, ""
 	default:
-		return "", ""
+		key = propertiesSummary(ev.Properties)
+		return eventType, key
 	}
+}
+
+// propertiesSummary 从 Properties 提取简短摘要，用于未识别或默认事件的 key。
+func propertiesSummary(p interface{}) string {
+	if p == nil {
+		return ""
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Sprint(p)
+	}
+	s := string(b)
+	if len(s) > eventKeyMaxLen {
+		return s[:eventKeyMaxLen] + "..."
+	}
+	return s
 }
 
 // runEventLoop 订阅 OpenCode event 流，收到 permission.updated 时按 autoPermission 自动授权或拒绝。
@@ -329,7 +377,7 @@ func (a *Adapter) runEventLoop(ctx context.Context) {
 		ev := stream.Current()
 		u := ev.AsUnion()
 
-		if eventType, key := publicOpencodeEventSummary(u); eventType != "" {
+		if eventType, key := publicOpencodeEventSummary(ev); eventType != "" {
 			slog.Info("public_opencode event", "type", eventType, "key", key)
 		}
 		perm, ok := u.(opencode.EventListResponseEventPermissionUpdated)
@@ -650,16 +698,19 @@ func (a *Adapter) handleCommand(ctx context.Context, msg mybot.Message) (bool, e
 	verb := parts[0]
 
 	switch verb {
+	case "/help":
+		return true, a.handleHelp(ctx, msg)
 	case "/reset":
 		return true, a.handleReset(ctx, msg)
 	case "/init":
-		return true, a.handleInit(ctx, msg)
+		scenario := strings.TrimSpace(strings.TrimPrefix(cmd, "/init"))
+		return true, a.handleCreateAgent(ctx, msg, scenario)
 	case "/history":
 		return true, a.handleHistory(ctx, msg)
 	case "/plan", "/status":
 		return true, a.handlePlan(ctx, msg)
 	default:
-		_ = a.sendCommandReply(ctx, msg, "未知命令。支持: /reset、/init、/history、/plan")
+		_ = a.sendCommandReply(ctx, msg, "未知命令。发送 /help 查看支持的命令。")
 		return true, nil
 	}
 }
@@ -688,6 +739,17 @@ func (a *Adapter) sendCommandReply(ctx context.Context, msg mybot.Message, conte
 	}
 }
 
+const helpText = `**命令说明：**
+* /help — 显示本帮助
+* /reset — 重置会话，创建新的 Session
+* /init <需求描述> — 根据需求由 AI 生成并保存 .opencode/agent/agent.md；若文件已存在会参考后调整
+* /history — 查看当前 Session 最近消息列表
+* /plan、/status — 查看当前 Session 状态与待办`
+
+func (a *Adapter) handleHelp(ctx context.Context, msg mybot.Message) error {
+	return a.sendCommandReply(ctx, msg, helpText)
+}
+
 func (a *Adapter) handleReset(ctx context.Context, msg mybot.Message) error {
 	a.mu.Lock()
 	oldID := a.sessionID
@@ -707,23 +769,37 @@ func (a *Adapter) handleReset(ctx context.Context, msg mybot.Message) error {
 	return a.sendCommandReply(ctx, msg, content)
 }
 
-func (a *Adapter) handleInit(ctx context.Context, msg mybot.Message) error {
+const agentMDPath = ".opencode/agent/agent.md"
+
+const createAgentPrompt = "请根据以下用户需求，直接创建或更新 OpenCode agent 配置文件。\n\n" +
+	"要求：\n" +
+	"1. 必须使用写文件/编辑工具，将结果保存到项目下的 " + agentMDPath + "（不要只在对话里输出内容）。\n" +
+	"2. 若该文件已存在，请先读取现有内容，在此基础上按用户需求调整；若不存在则新建。\n" +
+	"3. 文件格式：第一行 ---，YAML frontmatter，再一行 ---，正文为 agent 的 system prompt。\n" +
+	"4. frontmatter 约束：description 必填；mode 只能是 subagent、primary、all 之一（小写）；tools 必须是对象/键值对（如 write: true, edit: true, bash: false），不能是数组。\n" +
+	"5. 完成后简短确认已保存到 " + agentMDPath + "。"
+
+func (a *Adapter) handleCreateAgent(ctx context.Context, msg mybot.Message, scenario string) error {
+	if scenario == "" {
+		return a.sendCommandReply(ctx, msg, "用法: /init <需求描述>，例如: /init 我需要一个专门做代码审查的 agent")
+	}
+	agentDir := filepath.Join(a.directory, ".opencode", "agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("创建目录失败: %v", err))
+	}
 	sessionID, err := a.getOrCreateSession(ctx)
 	if err != nil {
-		return a.sendCommandReply(ctx, msg, fmt.Sprintf("初始化失败: 无法获取会话 (%v)", err))
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("创建 agent 失败: 无法获取会话 (%v)", err))
 	}
-	params := opencode.SessionInitParams{
-		MessageID:  opencode.F(""),
-		ModelID:    opencode.F(""),
-		ProviderID: opencode.F(""),
-		Directory:  opencode.F(a.directory),
-	}
-	_, err = a.client.Session.Init(ctx, sessionID, params)
+	userContent := createAgentPrompt + "\n\n用户需求：\n" + scenario
+	parts := a.buildParts(userContent, nil)
+	_, err = a.prompt(ctx, sessionID, parts)
 	if err != nil {
-		return a.sendCommandReply(ctx, msg, fmt.Sprintf("初始化 agent.md 失败: %v", err))
+		return a.sendCommandReply(ctx, msg, fmt.Sprintf("生成 agent 失败: %v", err))
 	}
-	a.logEvent("INIT session=%s", sessionID)
-	return a.sendCommandReply(ctx, msg, "已初始化 agent.md，当前会话将使用新的 Agent 配置。")
+	outPath := filepath.Join(a.directory, agentMDPath)
+	a.logEvent("CREATE_AGENT path=%s", outPath)
+	return a.sendCommandReply(ctx, msg, fmt.Sprintf("已根据需求创建/更新 %s。新会话将使用该 agent。", agentMDPath))
 }
 
 func (a *Adapter) handleHistory(ctx context.Context, msg mybot.Message) error {
