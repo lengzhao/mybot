@@ -18,6 +18,8 @@ type SystemConfig struct {
 	TraceEnabled   bool             `yaml:"trace_enabled"`
 	WorkDir        string           `yaml:"work_dir"`        // 主程序工作目录，空则使用「配置文件所在目录/workdir」；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
 	DefaultAdapter string           `yaml:"default_adapter"` // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
+	LogLevel       string           `yaml:"log_level"`       // 日志级别：debug/info/warn/error，空则 info
+	LogFile        string           `yaml:"log_file"`        // 日志文件路径，空则输出到 stdout
 	StateStore     StateStoreConfig `yaml:"state_store"`     // 状态存储配置
 	Admin          AdminConfig      `yaml:"admin"`           // 管理服务配置
 }
@@ -53,7 +55,16 @@ func LoadConfig(path string) (*Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return nil, err
 	}
-	cfg.System.WorkDir = filepath.Join(filepath.Dir(path), cfg.System.WorkDir)
+	baseDir := filepath.Dir(path)
+	cfg.System.WorkDir = filepath.Join(baseDir, cfg.System.WorkDir)
+	if cfg.System.WorkDir != "" {
+		if abs, err := filepath.Abs(cfg.System.WorkDir); err == nil {
+			cfg.System.WorkDir = abs
+		}
+	}
+	if cfg.System.StateStore.Enabled && cfg.System.StateStore.DBPath != "" && !filepath.IsAbs(cfg.System.StateStore.DBPath) && cfg.System.WorkDir != "" {
+		cfg.System.StateStore.DBPath = filepath.Join(cfg.System.WorkDir, cfg.System.StateStore.DBPath)
+	}
 	slog.Debug("Loaded config", "config", cfg)
 
 	return &cfg, nil

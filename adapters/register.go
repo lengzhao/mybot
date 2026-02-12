@@ -8,5 +8,6 @@ import (
 	_ "github.com/lengzhao/mybot/adapters/echo"
 	_ "github.com/lengzhao/mybot/adapters/lark"
 	_ "github.com/lengzhao/mybot/adapters/opencode"
+	_ "github.com/lengzhao/mybot/adapters/public_opencode"
 	_ "github.com/lengzhao/mybot/adapters/webchat"
 )

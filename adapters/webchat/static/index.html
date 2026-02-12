@@ -277,7 +277,7 @@
                 ws.onclose = function(event) {
                     document.getElementById('status').textContent = 'WebSocket连接已断开，正在重连...';
                     // 尝试重连
-                    setTimeout(connectWebSocket, 3000);
+                    setTimeout(connectWebSocket, 1000);
                 };
                 
                 ws.onerror = function(error) {

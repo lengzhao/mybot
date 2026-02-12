@@ -75,11 +75,6 @@ func (p *program) run() {
 
 	var store mybot.StateStore
 	if cfg.System.StateStore.Enabled {
-		// 如果状态库路径为相对路径，则基于 workDir 进行展开，避免在只读 cwd 下创建目录失败
-		if dbPath := cfg.System.StateStore.DBPath; dbPath != "" && !filepath.IsAbs(dbPath) && workDir != "" {
-			cfg.System.StateStore.DBPath = filepath.Join(workDir, dbPath)
-		}
-
 		store, err = mybot.NewSQLiteStore(cfg.System.StateStore)
 		if err != nil {
 			slog.Error("Failed to create state store", "err", err)
@@ -170,21 +165,42 @@ func main() {
 		configPath = *configFlag
 	}
 
-	// 初始化 slog，日志写入到配置文件同目录下的 logs/mybot.log
-	baseDir := filepath.Dir(configPath)
-	logDir := filepath.Join(baseDir, "logs")
-	if mkErr := os.MkdirAll(logDir, 0o755); mkErr != nil {
-		slog.Error("Failed to create log directory", "dir", logDir, "err", mkErr)
-	} else {
-		logFile := filepath.Join(logDir, "mybot.log")
-		f, openErr := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if openErr != nil {
-			slog.Error("Failed to open log file", "file", logFile, "err", openErr)
-		} else {
-			handler := slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})
-			slog.SetDefault(slog.New(handler))
-			slog.Info("Logger initialized", "file", logFile)
+	// 根据配置初始化 slog：log_level、log_file（空则 stdout）
+	level := slog.LevelInfo
+	var logWriter *os.File
+	if cfg, loadErr := mybot.LoadConfig(configPath); loadErr == nil {
+		switch cfg.System.LogLevel {
+		case "debug":
+			level = slog.LevelDebug
+		case "info", "":
+			level = slog.LevelInfo
+		case "warn":
+			level = slog.LevelWarn
+		case "error":
+			level = slog.LevelError
 		}
+		if cfg.System.LogFile != "" {
+			logPath := cfg.System.LogFile
+			if !filepath.IsAbs(logPath) {
+				logPath = filepath.Join(filepath.Dir(configPath), logPath)
+			}
+			if dir := filepath.Dir(logPath); dir != "" {
+				_ = os.MkdirAll(dir, 0o755)
+			}
+			if f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); openErr == nil {
+				logWriter = f
+			}
+		}
+	}
+	if logWriter == nil {
+		logWriter = os.Stdout
+	}
+	handler := slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: level})
+	slog.SetDefault(slog.New(handler))
+	if logWriter == os.Stdout {
+		slog.Info("Logger initialized", "output", "stdout", "level", level)
+	} else {
+		slog.Info("Logger initialized", "file", logWriter.Name(), "level", level)
 	}
 
 	prg := &program{configPath: configPath}

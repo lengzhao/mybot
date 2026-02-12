@@ -271,21 +271,19 @@ func (w *Adapter) writePump(client *Client) {
 				return
 			}
 		case <-ticker.C:
-			// 发送ping消息
+			// 发送 ping；conn 仅由本 goroutine 在 defer 中关闭，不会出现对已关闭连接写
 			client.conn.SetWriteDeadline(time.Now().Add(time.Second * 10))
 			if err := client.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				slog.Error("WebSocket ping error", "err", err)
 				return
 			}
 		}
 	}
 }
 
-// readPump 从WebSocket客户端读取消息
+// readPump 从WebSocket客户端读取消息。断开时只 unregister；manager 会 close(client.send)，writePump 退出时统一关闭 conn，避免 readPump 先关 conn 导致 ping 写已关闭连接。
 func (w *Adapter) readPump(client *Client) {
 	defer func() {
 		w.unregister <- client
-		client.conn.Close()
 	}()
 
 	client.conn.SetReadLimit(512 << 10) // 512KB限制
