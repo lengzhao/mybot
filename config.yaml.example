@@ -54,12 +54,11 @@ adapters:
     # cursor_bin: "agent"              # 可选，默认 "agent"
     # args: ["-f", "--approve-mcps"]   # 传给 Cursor CLI 的全局参数，位于 command 前，如：agent -f --approve-mcps agent "prompt"
 
-  # OpenCode 适配器：工作目录默认用 adapter_dir（adapters/opencode_1），可选 workdir 覆盖；不填 base_url 时自启动
+  # OpenCode 适配器：工作目录使用 adapter_dir（由主程序注入）；不填 base_url 时自启动
   - id: "opencode_1"
     type: "opencode"
     enabled: false
     # default_target: "console_1"     # opencode 的回复默认发送到该适配器
-    # workdir: "./custom"  # 可选，不填则用 adapter_dir
     # base_url: "http://localhost:3000"
     # opencode_bin: "opencode"
     # api_key: ""
@@ -70,7 +69,6 @@ adapters:
     type: "public_opencode"
     enabled: false
     # base_url: "http://127.0.0.1:4096" # 可选。不填则在 Start 时自启动 opencode serve（需安装 opencode CLI）
-    # workdir: "./public_oc"             # 可选，不填则用 adapter_dir
     # default_target: "webchat"          # 回复默认发往的适配器
     # api_key: ""                        # 可选，Bearer 认证
     # opencode_bin: "opencode"           # 自启动时使用的可执行文件名，默认 "opencode"

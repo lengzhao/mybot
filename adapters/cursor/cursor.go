@@ -58,20 +58,17 @@ func init() {
 			}
 		}
 
-		// 工作目录：优先显式 workdir，其次主程序注入的 adapter_dir
-		workdir, _ := config["workdir"].(string)
-		if workdir == "" {
-			workdir, _ = config["adapter_dir"].(string)
+		// 工作目录：仅使用主程序注入的 adapter_dir
+		adapterDir, _ := config["adapter_dir"].(string)
+		if adapterDir == "" {
+			return nil, fmt.Errorf("cursor adapter requires adapter_dir (from main)")
 		}
-		if workdir == "" {
-			return nil, fmt.Errorf("cursor adapter requires adapter_dir (from main) or workdir")
-		}
-		absDir, err := filepath.Abs(workdir)
+		absDir, err := filepath.Abs(adapterDir)
 		if err != nil {
 			return nil, err
 		}
-		workdir = absDir
-		if err := os.MkdirAll(workdir, 0755); err != nil {
+		adapterDir = absDir
+		if err := os.MkdirAll(adapterDir, 0755); err != nil {
 			return nil, err
 		}
 
@@ -79,7 +76,7 @@ func init() {
 			id:            id,
 			defaultTarget: defaultTarget,
 			cursorBin:     bin,
-			directory:     workdir,
+			directory:     adapterDir,
 			sessions:      make(map[string]string),
 			args:          cliArgs,
 		}, nil

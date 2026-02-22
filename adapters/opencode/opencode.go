@@ -29,19 +29,16 @@ func init() {
 	mybot.RegisterAdapterType("opencode", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
 		slog.Debug("Creating OpenCode Adapter", "id", id, "config", config)
 		baseURL, _ := config["base_url"].(string)
-		workdir, _ := config["workdir"].(string)
-		if workdir == "" {
-			workdir, _ = config["adapter_dir"].(string)
+		adapterDir, _ := config["adapter_dir"].(string)
+		if adapterDir == "" {
+			return nil, fmt.Errorf("opencode adapter requires adapter_dir (from main)")
 		}
-		if workdir == "" {
-			return nil, fmt.Errorf("opencode adapter requires adapter_dir (from main) or workdir")
-		}
-		absDir, err := filepath.Abs(workdir)
+		absDir, err := filepath.Abs(adapterDir)
 		if err != nil {
 			return nil, err
 		}
-		workdir = absDir
-		if err := os.MkdirAll(workdir, 0755); err != nil {
+		adapterDir = absDir
+		if err := os.MkdirAll(adapterDir, 0755); err != nil {
 			return nil, err
 		}
 		apiKey, _ := config["api_key"].(string)
@@ -57,7 +54,7 @@ func init() {
 		return &Adapter{
 			id:            id,
 			baseURL:       baseURL,
-			directory:     workdir,
+			directory:     adapterDir,
 			apiKey:        apiKey,
 			opencodeBin:   bin,
 			defaultTarget: defaultTarget,

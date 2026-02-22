@@ -28,19 +28,16 @@ func init() {
 	mybot.RegisterAdapterType("public_opencode", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
 		slog.Debug("Creating Public OpenCode Adapter", "id", id, "config", config)
 		baseURL, _ := config["base_url"].(string)
-		workdir, _ := config["workdir"].(string)
-		if workdir == "" {
-			workdir, _ = config["adapter_dir"].(string)
+		adapterDir, _ := config["adapter_dir"].(string)
+		if adapterDir == "" {
+			return nil, fmt.Errorf("public_opencode adapter requires adapter_dir (from main)")
 		}
-		if workdir == "" {
-			return nil, fmt.Errorf("public_opencode adapter requires adapter_dir or workdir")
-		}
-		absDir, err := filepath.Abs(workdir)
+		absDir, err := filepath.Abs(adapterDir)
 		if err != nil {
 			return nil, err
 		}
-		workdir = absDir
-		if err := os.MkdirAll(workdir, 0755); err != nil {
+		adapterDir = absDir
+		if err := os.MkdirAll(adapterDir, 0755); err != nil {
 			return nil, err
 		}
 		apiKey, _ := config["api_key"].(string)
@@ -68,7 +65,7 @@ func init() {
 			client:         client,
 			baseURL:        baseURL,
 			apiKey:         apiKey,
-			directory:      workdir,
+			directory:      adapterDir,
 			defaultTarget:  defaultTarget,
 			allowExecute:   allowExecute,
 			autoPermission: autoPermission,

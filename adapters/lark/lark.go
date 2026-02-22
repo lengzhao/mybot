@@ -290,9 +290,6 @@ func NewAdapter(id string, config map[string]interface{}) (*Adapter, error) {
 
 	defaultTarget, _ := config["default_target"].(string)
 	directory, _ := config["adapter_dir"].(string)
-	if d, ok := config["workdir"].(string); ok && d != "" {
-		directory = d
-	}
 	if directory != "" {
 		if abs, err := filepath.Abs(directory); err == nil {
 			directory = abs
@@ -480,7 +477,7 @@ func (a *Adapter) handleMessageResource(ctx context.Context, msg *larkim.EventMe
 		return
 	}
 	if a.directory == "" {
-		a.sendText(ctx, chatID, "当前未配置工作目录，无法接收"+contentLabel+"。请在适配器配置中设置 adapter_dir（或 workdir）。")
+		a.sendText(ctx, chatID, "当前未配置工作目录，无法接收"+contentLabel+"。请在 system.work_dir 或适配器配置中设置 adapter_dir。")
 		return
 	}
 	files, err := a.downloadMessageResource(ctx, larkcore.StringValue(msg.MessageId), resourceKey, resourceType)
