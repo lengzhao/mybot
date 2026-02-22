@@ -59,8 +59,8 @@ type Adapter struct {
 	botName   string
 	apiClient *lark.Client
 	wsClient  *larkws.Client
-	db       *gorm.DB
-	dbMu     sync.Mutex
+	db        *gorm.DB
+	dbMu      sync.Mutex
 }
 
 // aclEntry 记录 Lark 侧的管理员和白名单信息。
@@ -70,11 +70,11 @@ type Adapter struct {
 //   - 且 ChatID 不为空、UserID 为空：该会话中的所有用户允许；
 //   - 且 UserID 与 ChatID 都不为空：只允许该用户在该会话中使用。
 type aclEntry struct {
-	ID        uint      `gorm:"primaryKey"`
-	UserID    string    `gorm:"index"`
-	ChatID    string    `gorm:"index"`
-	IsAdmin   bool      `gorm:"index"`
-	Allowed   bool      `gorm:"index"`
+	ID        uint   `gorm:"primaryKey"`
+	UserID    string `gorm:"index"`
+	ChatID    string `gorm:"index"`
+	IsAdmin   bool   `gorm:"index"`
+	Allowed   bool   `gorm:"index"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -206,8 +206,8 @@ func (a *Adapter) addChatToWhitelist(chatID string) error {
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			entry = aclEntry{
-				UserID: "",
-				ChatID: chatID,
+				UserID:  "",
+				ChatID:  chatID,
 				Allowed: true,
 			}
 			return a.db.Create(&entry).Error
@@ -433,42 +433,39 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 		return nil
 
 	case larkim.MsgTypeFile:
-		// 文件消息也需要通过白名单校验。
-		if !a.isAllowed(userID, chatID) {
-			a.sendText(ctx, chatID, "当前会话或用户尚未被授权接收文件消息，请联系管理员在会话中发送 #allow。")
-			return nil
-		}
-
 		fileMsg := new(larkim.MessageFile)
 		if err := json.Unmarshal([]byte(larkcore.StringValue(msg.Content)), fileMsg); err != nil || fileMsg.FileKey == "" {
 			slog.Warn("lark: invalid file message content", "err", err)
 			return nil
 		}
-		files, err := a.downloadMessageFile(ctx, larkcore.StringValue(msg.MessageId), fileMsg.FileKey)
-		if err != nil {
-			slog.Error("lark: download message file failed", "file_key", fileMsg.FileKey, "err", err)
+		a.handleMessageResource(ctx, msg, userID, chatID, extra, fileMsg.FileKey, "file", "文件")
+		return nil
+
+	case larkim.MsgTypeImage:
+		imageMsg := new(larkim.MessageImage)
+		if err := json.Unmarshal([]byte(larkcore.StringValue(msg.Content)), imageMsg); err != nil || imageMsg.ImageKey == "" {
+			slog.Warn("lark: invalid image message content", "err", err)
 			return nil
 		}
-		content := "用户发送了一个文件"
-		if len(files) > 0 && files[0].Name != "" {
-			content = "用户发送了文件: " + files[0].Name
+		a.handleMessageResource(ctx, msg, userID, chatID, extra, imageMsg.ImageKey, "image", "图片")
+		return nil
+
+	case larkim.MsgTypeAudio:
+		audioMsg := new(larkim.MessageAudio)
+		if err := json.Unmarshal([]byte(larkcore.StringValue(msg.Content)), audioMsg); err != nil || audioMsg.FileKey == "" {
+			slog.Warn("lark: invalid audio message content", "err", err)
+			return nil
 		}
-		mbMsg := mybot.Message{
-			ID:            larkcore.StringValue(msg.MessageId),
-			SourceAdapter: a.id,
-			TargetAdapter: a.defaultTarget,
-			UserID:        userID,
-			Channel:       chatID,
-			Content:       content,
-			Type:          mybot.TypeText,
-			Timestamp:     time.Now().UnixMilli(),
-			Files:         files,
-			Extra:         extra,
+		a.handleMessageResource(ctx, msg, userID, chatID, extra, audioMsg.FileKey, "file", "音频")
+		return nil
+
+	case larkim.MsgTypeMedia:
+		mediaMsg := new(larkim.MessageMedia)
+		if err := json.Unmarshal([]byte(larkcore.StringValue(msg.Content)), mediaMsg); err != nil || mediaMsg.FileKey == "" {
+			slog.Warn("lark: invalid media message content", "err", err)
+			return nil
 		}
-		select {
-		case a.inbound <- mbMsg:
-		case <-ctx.Done():
-		}
+		a.handleMessageResource(ctx, msg, userID, chatID, extra, mediaMsg.FileKey, "file", "视频")
 		return nil
 	}
 
@@ -476,14 +473,54 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 	return nil
 }
 
-// downloadMessageFile 通过 message_id + file_key 下载用户发送的文件，保存到 directory/uploads，返回 mybot.File 列表。
-func (a *Adapter) downloadMessageFile(ctx context.Context, messageID, fileKey string) ([]mybot.File, error) {
+// handleMessageResource 校验白名单与工作目录后，下载消息中的资源（文件/图片/音频/视频）并转发到调度中心。
+func (a *Adapter) handleMessageResource(ctx context.Context, msg *larkim.EventMessage, userID, chatID string, extra map[string]interface{}, resourceKey, resourceType, contentLabel string) {
+	if !a.isAllowed(userID, chatID) {
+		a.sendText(ctx, chatID, "当前会话或用户尚未被授权接收"+contentLabel+"消息，请联系管理员在会话中发送 #allow。")
+		return
+	}
+	if a.directory == "" {
+		a.sendText(ctx, chatID, "当前未配置工作目录，无法接收"+contentLabel+"。请在适配器配置中设置 adapter_dir（或 workdir）。")
+		return
+	}
+	files, err := a.downloadMessageResource(ctx, larkcore.StringValue(msg.MessageId), resourceKey, resourceType)
+	if err != nil {
+		slog.Error("lark: download message resource failed", "key", resourceKey, "type", resourceType, "err", err)
+		a.sendText(ctx, chatID, contentLabel+"下载失败，请稍后重试。")
+		return
+	}
+	content := "用户发送了" + contentLabel
+	if len(files) > 0 && files[0].Name != "" {
+		content = "用户发送了" + contentLabel + ": " + files[0].Name
+	}
+	mbMsg := mybot.Message{
+		ID:            larkcore.StringValue(msg.MessageId),
+		SourceAdapter: a.id,
+		TargetAdapter: a.defaultTarget,
+		UserID:        userID,
+		Channel:       chatID,
+		Content:       content,
+		Type:          mybot.TypeText,
+		Timestamp:     time.Now().UnixMilli(),
+		Files:         files,
+		Extra:         extra,
+	}
+	select {
+	case a.inbound <- mbMsg:
+	case <-ctx.Done():
+	}
+}
+
+// downloadMessageResource 通过 message_id + key 下载消息中的资源，resourceType 为 "file"（文件/音频/视频）或 "image"（图片），保存到 directory/uploads，返回 mybot.File 列表。
+func (a *Adapter) downloadMessageResource(ctx context.Context, messageID, key, resourceType string) ([]mybot.File, error) {
 	if a.apiClient == nil || a.directory == "" {
 		return nil, fmt.Errorf("adapter not ready or no directory")
 	}
+	// 飞书 API 要求必传 type：file 表示消息中的文件/音频/视频，image 表示图片
 	resp, err := a.apiClient.Im.V1.MessageResource.Get(ctx, larkim.NewGetMessageResourceReqBuilder().
 		MessageId(messageID).
-		FileKey(fileKey).
+		FileKey(key).
+		Type(resourceType).
 		Build())
 	if err != nil {
 		return nil, err
@@ -493,7 +530,7 @@ func (a *Adapter) downloadMessageFile(ctx context.Context, messageID, fileKey st
 	}
 	name := resp.FileName
 	if name == "" {
-		name = fileKey
+		name = key
 	}
 	name = sanitizeFileName(name)
 	dir := filepath.Join(a.directory, uploadsDir)

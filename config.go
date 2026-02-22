@@ -65,6 +65,27 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.System.StateStore.Enabled && cfg.System.StateStore.DBPath != "" && !filepath.IsAbs(cfg.System.StateStore.DBPath) && cfg.System.WorkDir != "" {
 		cfg.System.StateStore.DBPath = filepath.Join(cfg.System.WorkDir, cfg.System.StateStore.DBPath)
 	}
+
+	// 为每个 adapter 默认设置 adapter_dir = WorkDir/adapters/{id}，若未显式配置
+	workDir := cfg.System.WorkDir
+	for i := range cfg.Adapters {
+		ac := cfg.Adapters[i]
+		if ac == nil {
+			continue
+		}
+		if _, has := ac["adapter_dir"]; has {
+			continue
+		}
+		if workDir == "" {
+			continue
+		}
+		id, _ := ac["id"].(string)
+		if id == "" {
+			continue
+		}
+		ac["adapter_dir"] = filepath.Join(workDir, "adapters", id)
+	}
+
 	slog.Debug("Loaded config", "config", cfg)
 
 	return &cfg, nil
