@@ -3,21 +3,30 @@
 # - system.work_dir 为工作目录，主程序会为每个 adapter 注入 adapter_dir = work_dir/adapters/{adapter_id}
 # - 支持文件收发的 adapter（如 opencode、lark、webchat）会使用 adapter_dir 存放上传/生成的文件
 # - default_adapter：无明确目标且无标签匹配时，消息投递到该适配器
-# - 各 adapter 的 default_target：该适配器收到消息后，回复默认发往的目标适配器
-
+# - 各 adapter 的 default_target：该适配器「发出消息时」的默认目标；执行端「回复」应尽量回源，避免将 default_target 指回 smart_router 造成循环
+# - 若希望「智能路由」：将 default_adapter 设为 smart_router 的 id，由 smart_router 按 rules 将消息转发到其他 adapter
+# - 防循环：system.max_hops 限制消息最大转发跳数（默认 20）；smart_router 禁止 rule 的 target 指向自己
+#
+# 推荐最小配置（全能助手：Lark/Web + Smart Router + Cursor + Cron）：启用 lark、webchat、smart_router、cursor、cron；入口 default_target 指 smart_router；smart_router default_target 指 cursor；执行端不设 default_target 或仅兜底
 system:
   trace_enabled: true
   # work_dir: "."           # 主程序工作目录，空则用进程 cwd；各 adapter 的 adapter_dir = work_dir/adapters/{adapter_id}
-  default_adapter: "echo_service"  # 路由兜底：无 Target 且无 Tags（或标签无匹配）时投递到该 adapter
+  default_adapter: "smart_router_1"  # 可选：设为 smart_router 做智能路由；或直接指定具体 adapter 如 echo.echo_service
+
+  # 防循环：消息最大转发跳数，超过则丢弃；默认 20，0 表示不限制
+  # max_hops: 20
 
   # 日志：不配或 log_file 为空则输出到 stdout
   # log_level: "info"       # debug / info / warn / error，空则 info
   # log_file: ""            # 日志文件路径，空则 stdout；相对路径相对于配置文件所在目录
 
-  # 管理后台：提供会话/消息查询等管理界面（需同时启用 state_store）
+  # 管理后台：提供会话/消息查询、配置查看、Cron、日志等（需同时启用 state_store）
   # admin:
   #   enabled: false        # 是否启用管理服务
-  #   port: "8081"          # 管理服务端口，默认 8081
+  #   port: "8081"          # 管理服务端口，默认 8081；启用后启动时自动打开管理页面
+  #   config_path: ""       # 配置文件路径，供管理页只读展示（通常与主程序加载的 config 一致）
+  #   cron_api_urls: []     # Cron 适配器 API 地址，如 ["http://127.0.0.1:9090"]，供管理页展示任务
+  #   log_path: ""          # 日志文件路径，供管理页查看（与 log_file 一致即可）
 
   # 状态存储：持久化消息等，供管理后台查询
   # state_store:
@@ -27,6 +36,28 @@ system:
   #   cleanup_days: 30      # 清理多少天前的数据
 
 adapters:
+  # Smart Router：作为 default_adapter 时，根据 rules 识别消息并转发到其他 adapter；target 填目标 adapter 的 GetID（如 echo.echo_service）
+  - id: "smart_router_1"
+    type: "smart_router"
+    enabled: true
+    default_target: "echo.echo_service"
+    rules:
+      - match_type: content_prefix
+        match_value: "/code"
+        target: "opencode.opencode_1"
+      - match_type: content_prefix
+        match_value: "/ask"
+        target: "deepseek.deepseek_chat"
+      - match_type: content_regex
+        match_value: "(?i)bug|error|fix"
+        target: "opencode.opencode_1"
+      # - match_type: user_id
+      #   match_value: "user_xxx"
+      #   target: "deepseek.deepseek_chat"
+      # - match_type: channel
+      #   match_value: "channel_yyy"
+      #   target: "lark.lark_bot"
+
   - id: "console_1"
     type: "console"
     enabled: true
@@ -84,6 +115,15 @@ adapters:
     app_id: "YOUR_LARK_APP_ID"
     app_secret: "YOUR_LARK_APP_SECRET"
     # drive_parent_node: "fldxxx"     # 可选。云文档父目录 token，回复时上传附件并发送文件消息；不设则只发文本
+
+  # Cron 适配器：定时任务；支持 Message 与 HTTP API 创建，触发后通过 inbound 投递到 payload.target_adapter 并回源（与其它 adapter 一致，无需主程序特殊处理）
+  - id: "cron_1"
+    type: "cron"
+    enabled: false
+    # default_target: "lark_bot"       # 创建任务的确认回复发往的 adapter，不设则回源
+    # cron_db_path: ""                # 可选，不设则用 adapter_dir/cron.db
+    # api_addr: "127.0.0.1:9090"     # 可选，开启 HTTP API 时填写监听地址（如 :9090 或 127.0.0.1:9090）
+    # api_token: ""                   # 可选，API 鉴权 Bearer / X-API-Key
 
   # WebChat 适配器：提供基于 Web 的聊天界面；支持上传附件，回复中的文件会显示下载链接
   - id: "webchat"

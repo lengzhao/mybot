@@ -98,7 +98,7 @@ func NewAdapter(id string, config map[string]interface{}) *Adapter {
 }
 
 func (w *Adapter) GetID() string {
-	return w.id
+	return "webchat." + w.id
 }
 
 func (w *Adapter) GetDefaultTarget() string {
@@ -337,7 +337,7 @@ func (w *Adapter) readPump(client *Client) {
 		// 创建消息（将 /files/:id 转为 file:// 绝对路径，下游无需再走 HTTP）
 		msg := mybot.Message{
 			ID:            msgID,
-			SourceAdapter: w.id,
+			SourceAdapter: w.GetID(),
 			TargetAdapter: w.GetDefaultTarget(),
 			UserID:        msgReq.SessionID,
 			Channel:       "webchat_ws",
@@ -363,7 +363,7 @@ func (w *Adapter) handleHealth(rw http.ResponseWriter, r *http.Request) {
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(map[string]interface{}{
 		"status":  "ok",
-		"adapter": w.id,
+		"adapter": w.GetID(),
 	})
 }
 
@@ -432,7 +432,7 @@ func (w *Adapter) handlePostSend(rw http.ResponseWriter, r *http.Request) {
 	// 创建消息（将 /files/:id 转为 file:// 绝对路径，下游无需再走 HTTP）
 	msg := mybot.Message{
 		ID:            msgID,
-		SourceAdapter: w.id,
+		SourceAdapter: w.GetID(),
 		TargetAdapter: w.GetDefaultTarget(),
 		UserID:        req.SessionID,
 		Channel:       "webchat",
@@ -647,7 +647,7 @@ func (w *Adapter) resolveMessageFiles(ctx context.Context, msg mybot.Message) my
 	return msg
 }
 
-func (w *Adapter) copyFileToUpload(ctx context.Context, srcPath, name string) (id string, err error) {
+func (w *Adapter) copyFileToUpload(_ context.Context, srcPath, name string) (id string, err error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return "", err

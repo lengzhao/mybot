@@ -22,12 +22,16 @@ type SystemConfig struct {
 	LogFile        string           `yaml:"log_file"`        // 日志文件路径，空则输出到 stdout
 	StateStore     StateStoreConfig `yaml:"state_store"`     // 状态存储配置
 	Admin          AdminConfig      `yaml:"admin"`           // 管理服务配置
+	MaxHops        int              `yaml:"max_hops"`        // 消息最大转发跳数，防循环；默认 20，0 表示不限制
 }
 
 // AdminConfig 管理服务配置
 type AdminConfig struct {
-	Enabled bool   `yaml:"enabled"` // 是否启用管理服务
-	Port    string `yaml:"port"`    // 管理服务端口
+	Enabled     bool     `yaml:"enabled"`      // 是否启用管理服务
+	Port        string   `yaml:"port"`         // 管理服务端口
+	ConfigPath  string   `yaml:"config_path"` // 配置文件路径，供管理页只读展示
+	CronAPIURLs []string `yaml:"cron_api_urls"` // Cron 适配器 API 地址列表，供管理页展示任务
+	LogPath     string   `yaml:"log_path"`     // 日志文件路径，供管理页查看
 }
 
 // StateStoreConfig 状态存储配置
@@ -64,6 +68,15 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.System.StateStore.Enabled && cfg.System.StateStore.DBPath != "" && !filepath.IsAbs(cfg.System.StateStore.DBPath) && cfg.System.WorkDir != "" {
 		cfg.System.StateStore.DBPath = filepath.Join(cfg.System.WorkDir, cfg.System.StateStore.DBPath)
+	}
+
+	// 若 admin 未配置 config_path，则使用当前加载的配置文件路径，供管理页只读展示
+	if cfg.System.Admin.ConfigPath == "" && path != "" {
+		if abs, err := filepath.Abs(path); err == nil {
+			cfg.System.Admin.ConfigPath = abs
+		} else {
+			cfg.System.Admin.ConfigPath = path
+		}
 	}
 
 	// 为每个 adapter 默认设置 adapter_dir = WorkDir/adapters/{id}，若未显式配置

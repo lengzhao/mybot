@@ -33,7 +33,7 @@ func NewAdapter(id string, config map[string]interface{}) *Adapter {
 }
 
 func (e *Adapter) GetID() string {
-	return e.id
+	return "echo." + e.id
 }
 
 func (e *Adapter) GetDefaultTarget() string {
@@ -56,7 +56,7 @@ func (e *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	response := mybot.Message{
 		ID:            fmt.Sprintf("echo-%d", time.Now().UnixNano()),
 		ParentID:      msg.ID,
-		SourceAdapter: e.id,
+		SourceAdapter: e.GetID(),
 		TargetAdapter: targetAdapter,
 		Content:       "[Echo] " + msg.Content,
 		Type:          mybot.TypeText,

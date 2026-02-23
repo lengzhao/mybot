@@ -3,11 +3,13 @@ package adapters
 
 import (
 	_ "github.com/lengzhao/mybot/adapters/console"
+	_ "github.com/lengzhao/mybot/adapters/cron"
 	_ "github.com/lengzhao/mybot/adapters/cursor"
 	_ "github.com/lengzhao/mybot/adapters/deepseek"
 	_ "github.com/lengzhao/mybot/adapters/echo"
 	_ "github.com/lengzhao/mybot/adapters/lark"
 	_ "github.com/lengzhao/mybot/adapters/opencode"
 	_ "github.com/lengzhao/mybot/adapters/public_opencode"
+	_ "github.com/lengzhao/mybot/adapters/smart_router"
 	_ "github.com/lengzhao/mybot/adapters/webchat"
 )

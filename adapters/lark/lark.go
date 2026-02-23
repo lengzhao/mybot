@@ -308,7 +308,7 @@ func NewAdapter(id string, config map[string]interface{}) (*Adapter, error) {
 }
 
 func (a *Adapter) GetID() string {
-	return a.id
+	return "lark." + a.id
 }
 
 func (a *Adapter) GetDefaultTarget() string {
@@ -414,7 +414,7 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 
 		mbMsg := mybot.Message{
 			ID:            larkcore.StringValue(msg.MessageId),
-			SourceAdapter: a.id,
+			SourceAdapter: a.GetID(),
 			TargetAdapter: a.defaultTarget,
 			UserID:        userID,
 			Channel:       chatID,
@@ -492,7 +492,7 @@ func (a *Adapter) handleMessageResource(ctx context.Context, msg *larkim.EventMe
 	}
 	mbMsg := mybot.Message{
 		ID:            larkcore.StringValue(msg.MessageId),
-		SourceAdapter: a.id,
+		SourceAdapter: a.GetID(),
 		TargetAdapter: a.defaultTarget,
 		UserID:        userID,
 		Channel:       chatID,

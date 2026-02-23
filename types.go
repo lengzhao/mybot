@@ -10,10 +10,10 @@ type MessageType string
 
 const (
 	TypeText        MessageType = "text"        // 普通文本
-	TypeCommand     MessageType = "command"    // 用户命令（如 /reset）
+	TypeCommand     MessageType = "command"     // 用户命令（如 /reset）
 	TypeInteraction MessageType = "interaction" // 交互：权限确认、问答选择等，可映射为按钮/卡片
-	TypeEvent       MessageType = "event"      // 平台或系统事件
-	TypeThinking    MessageType = "thinking"   // AI 思考过程/中间状态（如流式推理片段）
+	TypeEvent       MessageType = "event"       // 平台或系统事件
+	TypeThinking    MessageType = "thinking"    // AI 思考过程/中间状态（如流式推理片段）
 )
 
 // StateStore 状态存储接口
@@ -71,7 +71,7 @@ type Stats struct {
 // 能处理文件的 adapter 在接收消息时，应先把附件转存到自己的工作目录再处理。
 type File struct {
 	Name     string `json:"name"      db:"name"`      // 文件名
-	URL      string `json:"url"       db:"url"`      // 文件地址 (http(s) 或 file://)
+	URL      string `json:"url"       db:"url"`       // 文件地址 (http(s) 或 file://)
 	MimeType string `json:"mime_type" db:"mime_type"` // MIME 类型
 	Size     int64  `json:"size"      db:"size"`      // 字节数，可选
 }
@@ -79,13 +79,13 @@ type File struct {
 // Message 统一消息模型
 type Message struct {
 	ID            string `json:"id"              db:"id"`
-	ParentID      string `json:"parent_id"       db:"parent_id"`       // 所回复的消息 ID，空表示根消息
+	ParentID      string `json:"parent_id"       db:"parent_id"` // 所回复的消息 ID，空表示根消息
 	SourceAdapter string `json:"source_adapter"  db:"source_adapter"`
 	TargetAdapter string `json:"target_adapter"  db:"target_adapter"`
 
 	// 核心业务上下文
-	UserID  string `json:"user_id"  db:"user_id"`   // 发送者唯一 ID
-	Channel string `json:"channel"  db:"channel"`  // 频道/群组/会话 ID
+	UserID  string `json:"user_id"  db:"user_id"` // 发送者唯一 ID
+	Channel string `json:"channel"  db:"channel"` // 频道/群组/会话 ID
 
 	// 核心载荷
 	Content   string      `json:"content"   db:"content"`   // 文本内容或主要 Payload

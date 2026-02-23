@@ -1,199 +1,243 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <meta charset="utf-8">
-    <title>MyBot StateStore 管理页面</title>
+    <title>MyBot 管理页面</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; margin: 0; background: #f0f2f5; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .header { background: white; padding: 16px 24px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+        .header h1 { margin: 0; font-size: 20px; color: #1f2937; }
+        .header p { margin: 4px 0 0 0; font-size: 13px; color: #6b7280; }
+        .nav { display: flex; gap: 4px; flex-wrap: wrap; }
+        .nav a { padding: 8px 16px; border-radius: 6px; text-decoration: none; color: #374151; font-size: 14px; }
+        .nav a:hover { background: #f3f4f6; color: #111; }
+        .nav a.active { background: #2563eb; color: white; }
         .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
-        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
-        .stat-value { font-size: 28px; font-weight: bold; color: #007acc; }
-        .stat-label { color: #666; margin-top: 8px; font-size: 14px; }
-        .filters { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }
+        .stat-value { font-size: 28px; font-weight: bold; color: #2563eb; }
+        .stat-label { color: #6b7280; margin-top: 8px; font-size: 14px; }
+        .panel { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        .panel h3 { margin: 0 0 16px 0; font-size: 16px; color: #1f2937; }
         .filter-row { display: flex; gap: 15px; margin-bottom: 15px; align-items: center; flex-wrap: wrap; }
-        .filter-row label { width: 100px; font-weight: bold; }
-        input, select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-        button { background: #007acc; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; }
-        button:hover { background: #005a9e; }
-        .messages { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .message { padding: 15px; border-bottom: 1px solid #eee; }
-        .message:last-child { border-bottom: none; }
+        .filter-row label { width: 100px; font-weight: 500; font-size: 14px; }
+        input, select { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; }
+        button { background: #2563eb; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        button:hover { background: #1d4ed8; }
+        button.secondary { background: #6b7280; }
+        button.secondary:hover { background: #4b5563; }
+        .messages .message { padding: 15px; border-bottom: 1px solid #eee; }
+        .messages .message:last-child { border-bottom: none; }
         .message-header { display: flex; justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; gap: 10px; }
-        .message-meta { font-size: 12px; color: #666; }
-        .message-content { margin-top: 10px; color: #333; line-height: 1.5; }
-        .loading { text-align: center; padding: 30px; color: #666; font-size: 16px; }
-        .error { color: #d32f2f; padding: 15px; background: #ffebee; border-radius: 4px; margin: 15px 0; }
+        .message-meta { font-size: 12px; color: #6b7280; }
+        .message-content { margin-top: 10px; color: #374151; line-height: 1.5; }
+        .loading { text-align: center; padding: 30px; color: #6b7280; font-size: 14px; }
+        .error { color: #dc2626; padding: 15px; background: #fef2f2; border-radius: 6px; margin: 15px 0; font-size: 14px; }
+        .page { display: none; }
+        .page.active { display: block; }
+        pre.config-content { background: #1f2937; color: #e5e7eb; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 0; white-space: pre-wrap; word-break: break-all; }
+        .log-line { font-family: ui-monospace, monospace; font-size: 13px; padding: 2px 0; border-bottom: 1px solid #f3f4f6; }
+        .log-controls { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .cron-adapters { margin-bottom: 16px; }
+        .cron-adapter { padding: 10px 14px; background: #f9fafb; border-radius: 6px; margin-bottom: 8px; font-size: 14px; }
+        .cron-jobs table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .cron-jobs th, .cron-jobs td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }
+        .cron-jobs th { background: #f9fafb; font-weight: 600; color: #374151; }
         .actions { text-align: center; padding: 20px; }
+        .config-tabs { display: flex; gap: 8px; }
+        .config-tab { padding: 8px 16px; border: 1px solid #d1d5db; background: #f3f4f6; color: #374151; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        .config-tab:hover { background: #e5e7eb; color: #111827; }
+        .config-tab.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+        .config-view { margin-top: 8px; }
+        .config-form-section { margin-bottom: 20px; }
+        .config-form-section h4 { margin: 0 0 12px 0; font-size: 14px; color: #374151; }
+        .config-form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+        .config-form-row label { min-width: 140px; font-size: 14px; }
+        .config-form-row input[type="checkbox"] { width: auto; margin: 0; }
+        .config-form-row select { min-width: 160px; }
+        .config-form-adapters { overflow-x: auto; }
+        .config-form-adapters table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .config-form-adapters th, .config-form-adapters td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
+        .config-form-adapters th { background: #f9fafb; font-weight: 600; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>�� MyBot StateStore 管理面板</h1>
-            <p>消息存储状态监控与管理</p>
+            <div>
+                <h1>MyBot 管理面板</h1>
+                <p>消息存储、配置、定时任务与日志</p>
+            </div>
+            <nav class="nav">
+                <a href="#/" id="nav-dashboard">首页</a>
+                <a href="#/config" id="nav-config">配置</a>
+                <a href="#/cron" id="nav-cron">Cron</a>
+                <a href="#/logs" id="nav-logs">日志</a>
+            </nav>
         </div>
 
-        <div class="stats" id="stats-container">
-            <div class="loading">加载统计信息...</div>
+        <div id="page-dashboard" class="page active">
+            <div class="stats" id="stats-container">
+                <div class="loading">加载统计信息...</div>
+            </div>
+            <div class="panel">
+                <h3>消息查询</h3>
+                <div class="filter-row">
+                    <label>源适配器:</label>
+                    <input type="text" id="source-adapter" placeholder="适配器ID">
+                </div>
+                <div class="filter-row">
+                    <label>目标适配器:</label>
+                    <input type="text" id="target-adapter" placeholder="适配器ID">
+                </div>
+                <div class="filter-row">
+                    <label>用户ID:</label>
+                    <input type="text" id="user-id" placeholder="用户ID">
+                </div>
+                <div class="filter-row">
+                    <label>频道:</label>
+                    <input type="text" id="channel" placeholder="频道ID">
+                </div>
+                <div class="filter-row">
+                    <label>消息类型:</label>
+                    <select id="message-type">
+                        <option value="">全部类型</option>
+                        <option value="text">文本</option>
+                        <option value="image">图片</option>
+                        <option value="file">文件</option>
+                        <option value="command">命令</option>
+                    </select>
+                </div>
+                <div class="filter-row">
+                    <label>时间范围:</label>
+                    <input type="datetime-local" id="start-time">
+                    <span>到</span>
+                    <input type="datetime-local" id="end-time">
+                </div>
+                <div class="filter-row">
+                    <button onclick="loadMessages()">查询消息</button>
+                    <button onclick="loadStats()" class="secondary">刷新统计</button>
+                    <button onclick="clearFilters()" class="secondary">清除</button>
+                </div>
+            </div>
+            <div class="panel messages" id="messages-container">
+                <div class="loading">请输入过滤条件并点击查询...</div>
+            </div>
         </div>
 
-        <div class="filters">
-            <h3>🔍 消息查询过滤器</h3>
-            <div class="filter-row">
-                <label>源适配器:</label>
-                <input type="text" id="source-adapter" placeholder="输入适配器ID">
-            </div>
-            <div class="filter-row">
-                <label>目标适配器:</label>
-                <input type="text" id="target-adapter" placeholder="输入适配器ID">
-            </div>
-            <div class="filter-row">
-                <label>用户ID:</label>
-                <input type="text" id="user-id" placeholder="输入用户ID">
-            </div>
-            <div class="filter-row">
-                <label>频道:</label>
-                <input type="text" id="channel" placeholder="输入频道ID">
-            </div>
-            <div class="filter-row">
-                <label>消息类型:</label>
-                <select id="message-type">
-                    <option value="">全部类型</option>
-                    <option value="text">文本</option>
-                    <option value="image">图片</option>
-                    <option value="file">文件</option>
-                    <option value="command">命令</option>
-                </select>
-            </div>
-            <div class="filter-row">
-                <label>时间范围:</label>
-                <input type="datetime-local" id="start-time">
-                <span>到</span>
-                <input type="datetime-local" id="end-time">
-            </div>
-            <div class="filter-row">
-                <button onclick="loadMessages()">🔍 查询消息</button>
-                <button onclick="loadStats()">📊 刷新统计</button>
-                <button onclick="clearFilters()">🗑️ 清除过滤器</button>
+        <div id="page-config" class="page">
+            <div class="panel">
+                <h3>配置</h3>
+                <div id="config-path" style="font-size: 13px; color: #6b7280; margin-bottom: 10px;"></div>
+                <div class="config-tabs" style="margin-bottom: 12px;">
+                    <button type="button" class="config-tab active" data-tab="form" onclick="switchConfigTab('form')">表单编辑</button>
+                    <button type="button" class="config-tab" data-tab="raw" onclick="switchConfigTab('raw')">原始 YAML</button>
+                </div>
+                <div id="config-form-container" class="config-view"></div>
+                <div id="config-raw-container" class="config-view" style="display:none;">
+                    <pre class="config-content" id="config-content">加载中...</pre>
+                    <button onclick="loadConfigRaw()">刷新</button>
+                </div>
             </div>
         </div>
 
-        <div class="messages" id="messages-container">
-            <div class="loading">请输入过滤条件并点击查询...</div>
+        <div id="page-cron" class="page">
+            <div class="panel">
+                <h3>Cron 定时任务</h3>
+                <div class="cron-adapters" id="cron-adapters"></div>
+                <div id="cron-jobs-container"></div>
+            </div>
         </div>
-        
-        <div class="actions">
-            <button onclick="window.location.reload()">🔄 刷新页面</button>
+
+        <div id="page-logs" class="page">
+            <div class="panel">
+                <h3>日志</h3>
+                <div id="log-path" style="font-size: 13px; color: #6b7280; margin-bottom: 10px;"></div>
+                <div class="log-controls">
+                    <label>显示行数:</label>
+                    <select id="log-tail">
+                        <option value="100">100</option>
+                        <option value="300">300</option>
+                        <option value="500" selected>500</option>
+                        <option value="1000">1000</option>
+                    </select>
+                    <button onclick="loadLogs()">刷新</button>
+                </div>
+                <div id="log-content" style="max-height: 70vh; overflow: auto; background: #f9fafb; padding: 12px; border-radius: 6px;"></div>
+            </div>
         </div>
     </div>
 
     <script>
-        // 页面加载时初始化
-        document.addEventListener('DOMContentLoaded', function() {
+        function getHash() {
+            var h = (location.hash || '#/').slice(1).replace(/^\/+|\/+$/g, '') || 'dashboard';
+            if (h === '') return 'dashboard';
+            return h;
+        }
+        function setPage(name) {
+            document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+            document.querySelectorAll('.nav a').forEach(function(a) { a.classList.remove('active'); });
+            var el = document.getElementById('page-' + name);
+            var nav = document.getElementById('nav-' + name);
+            if (el) el.classList.add('active');
+            if (nav) nav.classList.add('active');
+            if (name === 'config') { if (document.querySelector('.config-tab.active')?.dataset.tab === 'raw') loadConfigRaw(); else loadConfigForm(); }
+            if (name === 'cron') loadCron();
+            if (name === 'logs') loadLogs();
+        }
+        window.addEventListener('hashchange', function() { setPage(getHash()); });
+        window.addEventListener('DOMContentLoaded', function() {
+            setPage(getHash());
             loadStats();
         });
 
-        // 加载统计信息
         async function loadStats() {
             try {
-                const response = await fetch('/api/stats');
-                if (!response.ok) throw new Error('Failed to load stats: ' + response.status);
-                
-                const stats = await response.json();
-                
-                const statsContainer = document.getElementById('stats-container');
-                statsContainer.innerHTML = 
+                var r = await fetch('/api/stats');
+                if (!r.ok) throw new Error('' + r.status);
+                var stats = await r.json();
+                var c = document.getElementById('stats-container');
+                c.innerHTML =
                     '<div class="stat-card"><div class="stat-value">' + (stats.total_messages || 0) + '</div><div class="stat-label">总消息数</div></div>' +
-                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_adapter || {}).length + '</div><div class="stat-label">适配器数量</div></div>' +
-                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_user || {}).length + '</div><div class="stat-label">用户数量</div></div>' +
-                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_channel || {}).length + '</div><div class="stat-label">频道数量</div></div>';
-            } catch (error) {
-                document.getElementById('stats-container').innerHTML = 
-                    '<div class="error">加载统计失败: ' + error.message + '</div>';
+                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_adapter || {}).length + '</div><div class="stat-label">适配器数</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_user || {}).length + '</div><div class="stat-label">用户数</div></div>' +
+                    '<div class="stat-card"><div class="stat-value">' + Object.keys(stats.messages_by_channel || {}).length + '</div><div class="stat-label">频道数</div></div>';
+            } catch (e) {
+                var msg = e.message === '503' || e.message === '503 Service Unavailable' ? 'StateStore 未启用或不可用' : ('加载统计失败: ' + e.message);
+                document.getElementById('stats-container').innerHTML = '<div class="error">' + escapeHtml(msg) + '</div>';
             }
         }
 
-        // 加载消息列表
         async function loadMessages() {
             try {
-                const params = new URLSearchParams();
-                
-                const sourceAdapter = document.getElementById('source-adapter').value;
-                const targetAdapter = document.getElementById('target-adapter').value;
-                const userId = document.getElementById('user-id').value;
-                const channel = document.getElementById('channel').value;
-                const messageType = document.getElementById('message-type').value;
-                
-                if (sourceAdapter) params.append('source_adapter', sourceAdapter);
-                if (targetAdapter) params.append('target_adapter', targetAdapter);
-                if (userId) params.append('user_id', userId);
-                if (channel) params.append('channel', channel);
-                if (messageType) params.append('type', messageType);
-                
-                // 时间范围处理
-                const startTime = document.getElementById('start-time').value;
-                const endTime = document.getElementById('end-time').value;
-                if (startTime) {
-                    const startTimestamp = new Date(startTime).getTime();
-                    params.append('start_time', startTimestamp);
-                }
-                if (endTime) {
-                    const endTimestamp = new Date(endTime).getTime();
-                    params.append('end_time', endTimestamp);
-                }
-                
-                params.append('limit', 100);
-                
-                document.getElementById('messages-container').innerHTML = '<div class="loading">🔍 正在加载中...</div>';
-                
-                const response = await fetch('/api/messages?' + params.toString());
-                if (!response.ok) throw new Error('Failed to load messages: ' + response.status);
-                
-                const data = await response.json();
-                
-                if (data.messages && data.messages.length > 0) {
-                    let messagesHtml = '';
-                    data.messages.forEach(function(msg) {
-                        messagesHtml += 
-                            '<div class="message">' +
-                            '    <div class="message-header">' +
-                            '        <div class="message-meta">' +
-                            '            <strong>ID:</strong> ' + msg.id + ' |' +
-                            '            <strong>源:</strong> ' + msg.source_adapter + ' |' +
-                            '            <strong>目标:</strong> ' + (msg.target_adapter || 'default') + ' |' +
-                            '            <strong>用户:</strong> ' + msg.user_id +
-                            '        </div>' +
-                            '        <div class="message-meta">' +
-                            '            ' + new Date(msg.timestamp).toLocaleString() +
-                            '        </div>' +
-                            '    </div>' +
-                            '    <div class="message-meta">' +
-                            '        <strong>频道:</strong> ' + msg.channel + ' |' +
-                            '        <strong>类型:</strong> ' + msg.type +
-                            '    </div>' +
-                            '    <div class="message-content">' +
-                            '        ' + (msg.content ? msg.content.substring(0, 300) + (msg.content.length > 300 ? '...' : '') : '(无内容)') +
-                            '    </div>' +
-                            '</div>';
-                    });
-                    
-                    messagesHtml += '<div style="padding: 15px; text-align: center; color: #666; background: #f9f9f9;">' +
-                        '显示 ' + data.messages.length + ' 条消息 (共 ' + data.count + ' 条匹配记录)' +
-                        '</div>';
-                    document.getElementById('messages-container').innerHTML = messagesHtml;
-                } else {
-                    document.getElementById('messages-container').innerHTML = 
-                        '<div class="loading">📋 未找到匹配的消息</div>';
-                }
-            } catch (error) {
-                document.getElementById('messages-container').innerHTML = 
-                    '<div class="error">❌ 加载消息失败: ' + error.message + '</div>';
+                var params = new URLSearchParams();
+                ['source_adapter','target_adapter','user_id','channel'].forEach(function(k) {
+                    var v = document.getElementById(k.replace(/_/g, '-'));
+                    if (v && v.value) params.append(k, v.value);
+                });
+                var mt = document.getElementById('message-type').value;
+                if (mt) params.append('type', mt);
+                var st = document.getElementById('start-time').value, et = document.getElementById('end-time').value;
+                if (st) params.append('start_time', new Date(st).getTime());
+                if (et) params.append('end_time', new Date(et).getTime());
+                params.append('limit', '100');
+                document.getElementById('messages-container').innerHTML = '<div class="loading">加载中...</div>';
+                var r = await fetch('/api/messages?' + params);
+                if (!r.ok) throw new Error('' + r.status);
+                var data = await r.json();
+                var list = data.messages || [];
+                var html = '';
+                list.forEach(function(msg) {
+                    var content = msg.content ? (msg.content.substring(0, 300) + (msg.content.length > 300 ? '...' : '')) : '(无内容)';
+                    html += '<div class="message"><div class="message-header"><div class="message-meta"><strong>ID:</strong> ' + escapeHtml(String(msg.id)) + ' | <strong>源:</strong> ' + escapeHtml(String(msg.source_adapter || '')) + ' | <strong>目标:</strong> ' + escapeHtml(String(msg.target_adapter || 'default')) + ' | <strong>用户:</strong> ' + escapeHtml(String(msg.user_id || '')) + '</div><div class="message-meta">' + (msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '') + '</div></div><div class="message-meta"><strong>频道:</strong> ' + escapeHtml(String(msg.channel || '')) + ' | <strong>类型:</strong> ' + escapeHtml(String(msg.type || '')) + '</div><div class="message-content">' + escapeHtml(content) + '</div></div>';
+                });
+                html += '<div style="padding:12px;text-align:center;color:#6b7280;background:#f9fafb;">显示 ' + list.length + ' 条</div>';
+                document.getElementById('messages-container').innerHTML = html || '<div class="loading">未找到匹配消息</div>';
+            } catch (e) {
+                document.getElementById('messages-container').innerHTML = '<div class="error">加载失败: ' + e.message + '</div>';
             }
         }
 
-        // 清除过滤器
         function clearFilters() {
             document.getElementById('source-adapter').value = '';
             document.getElementById('target-adapter').value = '';
@@ -202,18 +246,216 @@
             document.getElementById('message-type').value = '';
             document.getElementById('start-time').value = '';
             document.getElementById('end-time').value = '';
-            document.getElementById('messages-container').innerHTML = 
-                '<div class="loading">请输入过滤条件并点击查询...</div>';
+            document.getElementById('messages-container').innerHTML = '<div class="loading">请输入过滤条件并点击查询...</div>';
         }
 
-        // 健康检查
-        async function healthCheck() {
-            try {
-                const response = await fetch('/health');
-                return response.ok;
-            } catch {
-                return false;
+        var configFormData = null;
+
+        function switchConfigTab(tab) {
+            document.querySelectorAll('.config-tab').forEach(function(b) { b.classList.toggle('active', b.dataset.tab === tab); });
+            var formEl = document.getElementById('config-form-container');
+            var rawEl = document.getElementById('config-raw-container');
+            if (tab === 'form') {
+                formEl.style.display = 'block';
+                rawEl.style.display = 'none';
+                loadConfigForm();
+            } else {
+                formEl.style.display = 'none';
+                rawEl.style.display = 'block';
+                loadConfigRaw();
             }
+        }
+
+        async function loadConfigRaw() {
+            var pre = document.getElementById('config-content');
+            var pathEl = document.getElementById('config-path');
+            if (!pre) return;
+            pre.textContent = '加载中...';
+            try {
+                var r = await fetch('/api/config');
+                if (!r.ok) throw new Error('' + r.status);
+                var data = await r.json();
+                pathEl.textContent = data.path ? ('路径: ' + data.path) : (data.hint || '未配置 config_path');
+                pre.textContent = data.content || '(无内容)';
+            } catch (e) {
+                pre.textContent = '加载失败: ' + e.message;
+                if (pathEl) pathEl.textContent = '';
+            }
+        }
+
+        async function loadConfigForm() {
+            var container = document.getElementById('config-form-container');
+            var pathEl = document.getElementById('config-path');
+            if (!container) return;
+            container.innerHTML = '<div class="loading">加载中...</div>';
+            try {
+                var r = await fetch('/api/config/structured');
+                if (!r.ok) throw new Error('' + r.status);
+                var data = await r.json();
+                pathEl.textContent = data.path ? ('路径: ' + data.path + '（可编辑并保存，重启服务后生效）') : '未配置 config_path';
+                configFormData = data;
+                renderConfigForm(data.config || {});
+            } catch (e) {
+                container.innerHTML = '<div class="error">加载失败: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        function renderConfigForm(cfg) {
+            var sys = cfg.system || {};
+            var adapters = cfg.adapters || [];
+            var adapterIds = adapters.map(function(a) { return (a.id || '').toString(); }).filter(Boolean);
+            var defaultAdapterOpts = adapterIds.map(function(id) { return '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>'; }).join('');
+            var targetOpts = adapters.map(function(a) {
+                var tid = (a.type || '') + '.' + (a.id || '');
+                return tid && tid !== '.' ? ('<option value="' + escapeHtml(tid) + '">' + escapeHtml(tid) + '</option>') : '';
+            }).join('');
+
+            var html = '';
+            html += '<div class="config-form-section"><h4>系统</h4>';
+            html += '<div class="config-form-row"><label>trace_enabled</label><input type="checkbox" id="cfg-trace_enabled" ' + (sys.trace_enabled ? 'checked' : '') + '></div>';
+            html += '<div class="config-form-row"><label>default_adapter</label><select id="cfg-default_adapter"><option value="">（空）</option>' + defaultAdapterOpts + '</select></div>';
+            html += '<div class="config-form-row"><label>log_level</label><select id="cfg-log_level"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></div>';
+            html += '<div class="config-form-row"><label>log_file</label><input type="text" id="cfg-log_file" value="' + escapeHtml(String(sys.log_file || '')) + '" placeholder="空则 stdout" style="min-width:200px"></div>';
+            html += '<div class="config-form-row"><label>max_hops</label><input type="number" id="cfg-max_hops" value="' + (sys.max_hops != null ? sys.max_hops : '20') + '" min="0" style="width:80px"></div></div>';
+
+            var admin = (sys.admin || {});
+            html += '<div class="config-form-section"><h4>管理 (admin)</h4>';
+            html += '<div class="config-form-row"><label>enabled</label><input type="checkbox" id="cfg-admin-enabled" ' + (admin.enabled ? 'checked' : '') + '></div>';
+            html += '<div class="config-form-row"><label>port</label><input type="text" id="cfg-admin-port" value="' + escapeHtml(String(admin.port || '8081')) + '" style="width:80px"></div></div>';
+
+            var ss = (sys.state_store || {});
+            html += '<div class="config-form-section"><h4>状态存储 (state_store)</h4>';
+            html += '<div class="config-form-row"><label>enabled</label><input type="checkbox" id="cfg-ss-enabled" ' + (ss.enabled ? 'checked' : '') + '></div>';
+            html += '<div class="config-form-row"><label>db_path</label><input type="text" id="cfg-ss-db_path" value="' + escapeHtml(String(ss.db_path || '')) + '" placeholder="如 ./data/mybot.db" style="min-width:200px"></div>';
+            html += '<div class="config-form-row"><label>auto_cleanup</label><input type="checkbox" id="cfg-ss-auto_cleanup" ' + (ss.auto_cleanup ? 'checked' : '') + '></div>';
+            html += '<div class="config-form-row"><label>cleanup_days</label><input type="number" id="cfg-ss-cleanup_days" value="' + (ss.cleanup_days != null ? ss.cleanup_days : '30') + '" min="1" style="width:80px"></div></div>';
+
+            html += '<div class="config-form-section"><h4>适配器</h4><div class="config-form-adapters"><table><thead><tr><th>id</th><th>type</th><th>enabled</th><th>default_target</th></tr></thead><tbody>';
+            adapters.forEach(function(a, i) {
+                var aid = escapeHtml(String(a.id || ''));
+                var atype = escapeHtml(String(a.type || ''));
+                var checked = a.enabled ? 'checked' : '';
+                var dt = escapeHtml(String(a.default_target || ''));
+                html += '<tr><td>' + aid + '</td><td>' + atype + '</td><td><input type="checkbox" class="cfg-adapter-enabled" data-i="' + i + '" ' + checked + '></td><td><select class="cfg-adapter-target" data-i="' + i + '"><option value="">（空）</option>' + targetOpts + '</select></td></tr>';
+            });
+            html += '</tbody></table></div></div>';
+
+            html += '<div class="config-form-row"><button onclick="saveConfig()">保存配置</button> <span id="config-save-msg" style="margin-left:8px;font-size:13px;color:#6b7280"></span></div>';
+
+            document.getElementById('config-form-container').innerHTML = html;
+
+            document.getElementById('cfg-log_level').value = sys.log_level || 'info';
+            document.getElementById('cfg-default_adapter').value = sys.default_adapter || '';
+            adapters.forEach(function(a, i) {
+                var sel = document.querySelector('.cfg-adapter-target[data-i="' + i + '"]');
+                if (sel) sel.value = a.default_target || '';
+            });
+        }
+
+        function collectFormPayload() {
+            var sys = {
+                trace_enabled: document.getElementById('cfg-trace_enabled').checked,
+                default_adapter: document.getElementById('cfg-default_adapter').value || null,
+                log_level: document.getElementById('cfg-log_level').value || 'info',
+                log_file: document.getElementById('cfg-log_file').value || null,
+                max_hops: parseInt(document.getElementById('cfg-max_hops').value, 10) || 20
+            };
+            sys.admin = {
+                enabled: document.getElementById('cfg-admin-enabled').checked,
+                port: document.getElementById('cfg-admin-port').value || '8081'
+            };
+            sys.state_store = {
+                enabled: document.getElementById('cfg-ss-enabled').checked,
+                db_path: document.getElementById('cfg-ss-db_path').value || null,
+                auto_cleanup: document.getElementById('cfg-ss-auto_cleanup').checked,
+                cleanup_days: parseInt(document.getElementById('cfg-ss-cleanup_days').value, 10) || 30
+            };
+            var adapters = (configFormData && configFormData.config && configFormData.config.adapters) ? configFormData.config.adapters.slice() : [];
+            adapters.forEach(function(a, i) {
+                var cb = document.querySelector('.cfg-adapter-enabled[data-i="' + i + '"]');
+                var sel = document.querySelector('.cfg-adapter-target[data-i="' + i + '"]');
+                if (cb) a.enabled = cb.checked;
+                if (sel) a.default_target = sel.value || null;
+            });
+            return { system: sys, adapters: adapters };
+        }
+
+        async function saveConfig() {
+            var msgEl = document.getElementById('config-save-msg');
+            if (msgEl) msgEl.textContent = '保存中...';
+            try {
+                var payload = collectFormPayload();
+                var r = await fetch('/api/config', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                if (!r.ok) { var t = await r.text(); throw new Error(t || r.status); }
+                if (msgEl) msgEl.textContent = '已保存（重启服务后生效）';
+            } catch (e) {
+                if (msgEl) msgEl.textContent = '保存失败: ' + e.message;
+            }
+        }
+
+        async function loadCron() {
+            var adaptersEl = document.getElementById('cron-adapters');
+            var jobsEl = document.getElementById('cron-jobs-container');
+            if (!adaptersEl) return;
+            adaptersEl.innerHTML = '<div class="loading">加载中...</div>';
+            jobsEl.innerHTML = '';
+            try {
+                var r = await fetch('/api/cron/adapters');
+                if (!r.ok) throw new Error('' + r.status);
+                var data = await r.json();
+                var adapters = data.adapters || [];
+                if (adapters.length === 0) {
+                    adaptersEl.innerHTML = '<div class="error">未配置 Cron API（请在 admin.cron_api_urls 中配置）</div>';
+                    return;
+                }
+                adaptersEl.innerHTML = adapters.map(function(url) { return '<div class="cron-adapter">' + escapeHtml(String(url)) + '</div>'; }).join('');
+                var all = [];
+                for (var i = 0; i < adapters.length; i++) {
+                    try {
+                        var jr = await fetch('/api/cron/jobs?adapter_url=' + encodeURIComponent(adapters[i]));
+                        if (jr.ok) {
+                            var jd = await jr.json();
+                            (jd.jobs || []).forEach(function(j) { j._adapter = adapters[i]; all.push(j); });
+                        }
+                    } catch (_) {}
+                }
+                if (all.length === 0) {
+                    jobsEl.innerHTML = '<div class="loading">暂无定时任务</div>';
+                    return;
+                }
+                var table = '<table class="cron-jobs"><thead><tr><th>ID</th><th>Schedule</th><th>Status</th><th>CreatedAt</th><th>LastRun</th><th>RunCount</th></tr></thead><tbody>';
+                all.forEach(function(j) {
+                    table += '<tr><td>' + escapeHtml(String(j.ID || '')) + '</td><td>' + escapeHtml(String(j.Schedule || '')) + '</td><td>' + escapeHtml(String(j.Status || '')) + '</td><td>' + (j.CreatedAt ? new Date(j.CreatedAt).toLocaleString() : '') + '</td><td>' + (j.LastRunAt ? new Date(j.LastRunAt).toLocaleString() : '') + '</td><td>' + escapeHtml(String(j.RunCount != null ? j.RunCount : '')) + '</td></tr>';
+                });
+                jobsEl.innerHTML = table + '</tbody></table>';
+            } catch (e) {
+                adaptersEl.innerHTML = '<div class="error">加载失败: ' + e.message + '</div>';
+            }
+        }
+
+        async function loadLogs() {
+            var el = document.getElementById('log-content');
+            var pathEl = document.getElementById('log-path');
+            if (!el) return;
+            el.innerHTML = '加载中...';
+            var tail = document.getElementById('log-tail') ? document.getElementById('log-tail').value : '500';
+            try {
+                var r = await fetch('/api/logs?tail=' + tail);
+                if (!r.ok) throw new Error('' + r.status);
+                var data = await r.json();
+                pathEl.textContent = data.path ? '路径: ' + data.path + '（共 ' + (data.total || 0) + ' 行，显示最后 ' + (data.lines ? data.lines.length : 0) + ' 行）' : '未配置 log_path';
+                var lines = data.lines || [];
+                el.innerHTML = lines.map(function(l) { return '<div class="log-line">' + escapeHtml(l) + '</div>'; }).join('') || '(无内容)';
+            } catch (e) {
+                el.innerHTML = '加载失败: ' + e.message;
+                pathEl.textContent = '';
+            }
+        }
+        function escapeHtml(s) {
+            if (s == null) return '';
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
         }
     </script>
 </body>

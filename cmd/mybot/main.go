@@ -85,8 +85,11 @@ func (p *program) run() {
 	var adminService *admin.Service
 	if cfg.System.Admin.Enabled {
 		adminConfig := admin.Config{
-			Enabled: cfg.System.Admin.Enabled,
-			Port:    cfg.System.Admin.Port,
+			Enabled:     cfg.System.Admin.Enabled,
+			Port:        cfg.System.Admin.Port,
+			ConfigPath:  cfg.System.Admin.ConfigPath,
+			CronAPIURLs: cfg.System.Admin.CronAPIURLs,
+			LogPath:     cfg.System.Admin.LogPath,
 		}
 		adminService = admin.NewService(adminConfig, store)
 	}

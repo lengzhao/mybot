@@ -100,7 +100,7 @@ type Adapter struct {
 }
 
 func (a *Adapter) GetID() string {
-	return a.id
+	return "cursor." + a.id
 }
 
 func (a *Adapter) GetDefaultTarget() string {
@@ -165,7 +165,7 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	reply := mybot.Message{
 		ID:            fmt.Sprintf("cursor-%d", time.Now().UnixNano()),
 		ParentID:      msg.ID,
-		SourceAdapter: a.id,
+		SourceAdapter: a.GetID(),
 		TargetAdapter: targetAdapter,
 		Content:       output,
 		Type:          mybot.TypeText,
