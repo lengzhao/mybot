@@ -556,6 +556,40 @@ func sanitizeFileName(s string) string {
 	return s
 }
 
+// OnMessageDispatchedToTarget 实现 SourceAckAdapter：当消息被投递给目标 adapter 时，在 Lark 原消息上加 👍 表示“已收到、处理中”。
+func (a *Adapter) OnMessageDispatchedToTarget(ctx context.Context, msg mybot.Message, targetAdapterID string) {
+	if msg.SourceAdapter != a.id || a.apiClient == nil {
+		return
+	}
+	messageID := msg.ID
+	if messageID == "" {
+		return
+	}
+	// 仅当消息来自 Lark（Extra 中有 lark 相关字段）时添加 reaction，避免误操作其他来源消息
+	if msg.Extra == nil {
+		return
+	}
+	if _, ok := msg.Extra["lark_chat_id"]; !ok {
+		if _, ok = msg.Extra["lark_msg_id"]; !ok {
+			return
+		}
+	}
+	req := larkim.NewCreateMessageReactionReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+			ReactionType(larkim.NewEmojiBuilder().EmojiType("THUMBSUP").Build()).
+			Build()).
+		Build()
+	resp, err := a.apiClient.Im.V1.MessageReaction.Create(ctx, req)
+	if err != nil {
+		slog.Debug("lark: add reaction failed", "msg_id", messageID, "err", err)
+		return
+	}
+	if !resp.Success() {
+		slog.Debug("lark: add reaction not success", "msg_id", messageID, "code", resp.Code, "msg", resp.Msg)
+	}
+}
+
 // ReceiveMessage 将调度中心的消息发送回 Lark
 func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	// 只处理发给自己的消息

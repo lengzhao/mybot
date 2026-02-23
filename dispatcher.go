@@ -165,6 +165,14 @@ func (d *Dispatcher) dispatch(msg Message) {
 }
 
 func (d *Dispatcher) deliver(msg Message, targetID string, adapter Adapter) {
+	// 若源 adapter 实现了 SourceAckAdapter，先通知“消息已被目标接收”，便于在源端做“处理中”反馈（如 Lark 加表情）
+	if msg.SourceAdapter != "" {
+		if source, ok := d.adapters[msg.SourceAdapter]; ok {
+			if ack, ok := source.(SourceAckAdapter); ok {
+				ack.OnMessageDispatchedToTarget(d.ctx, msg, targetID)
+			}
+		}
+	}
 	if err := adapter.ReceiveMessage(d.ctx, msg); err != nil {
 		slog.Error("dispatch deliver failed", "target", targetID, "msg_id", msg.ID, "err", err)
 	}

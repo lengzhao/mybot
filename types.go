@@ -114,3 +114,9 @@ type Adapter interface {
 	// Status 返回该适配器的当前状态
 	Status() string
 }
+
+// SourceAckAdapter 可选接口：当消息被投递到目标 adapter 时，通知源 adapter 以便做“已收到、处理中”等反馈（如 Lark 在原消息上加表情）。
+type SourceAckAdapter interface {
+	// OnMessageDispatchedToTarget 当调度中心将消息投递给目标 adapter 时调用；source 可据此在原消息上做反馈（如加 👍）。
+	OnMessageDispatchedToTarget(ctx context.Context, msg Message, targetAdapterID string)
+}
