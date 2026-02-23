@@ -98,7 +98,7 @@ func NewAdapter(id string, config map[string]interface{}) *Adapter {
 }
 
 func (w *Adapter) GetID() string {
-	return "webchat." + w.id
+	return w.id
 }
 
 func (w *Adapter) GetDefaultTarget() string {

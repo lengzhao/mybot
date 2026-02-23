@@ -308,7 +308,7 @@ func NewAdapter(id string, config map[string]interface{}) (*Adapter, error) {
 }
 
 func (a *Adapter) GetID() string {
-	return "lark." + a.id
+	return a.id
 }
 
 func (a *Adapter) GetDefaultTarget() string {

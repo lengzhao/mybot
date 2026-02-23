@@ -90,7 +90,7 @@ func NewAdapter(id string, config map[string]interface{}) (*Adapter, error) {
 	}, nil
 }
 
-func (a *Adapter) GetID() string            { return "cron." + a.id }
+func (a *Adapter) GetID() string            { return a.id }
 func (a *Adapter) GetDefaultTarget() string { return a.defaultTarget }
 
 func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error {

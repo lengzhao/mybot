@@ -73,7 +73,7 @@ type deepSeekResponse struct {
 }
 
 func (a *Adapter) GetID() string {
-	return "deepseek." + a.id
+	return a.id
 }
 
 func (a *Adapter) GetDefaultTarget() string {

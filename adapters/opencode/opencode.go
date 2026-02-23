@@ -80,7 +80,7 @@ type Adapter struct {
 }
 
 func (a *Adapter) GetID() string {
-	return "opencode." + a.id
+	return a.id
 }
 
 func (a *Adapter) GetDefaultTarget() string {

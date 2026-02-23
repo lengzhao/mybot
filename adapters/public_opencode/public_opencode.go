@@ -92,7 +92,7 @@ type Adapter struct {
 }
 
 func (a *Adapter) GetID() string {
-	return "public_opencode." + a.id
+	return a.id
 }
 
 func (a *Adapter) GetDefaultTarget() string {

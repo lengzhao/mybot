@@ -33,7 +33,7 @@ func NewAdapter(id string, config map[string]interface{}) *Adapter {
 }
 
 func (e *Adapter) GetID() string {
-	return "echo." + e.id
+	return e.id
 }
 
 func (e *Adapter) GetDefaultTarget() string {
