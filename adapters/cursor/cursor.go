@@ -3,8 +3,10 @@ package cursor
 import (
 	"bytes"
 	"context"
+	"embed"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -19,6 +21,9 @@ import (
 )
 
 const uploadsDir = "uploads"
+
+//go:embed rules_template
+var cursorRulesTemplate embed.FS
 
 func init() {
 	mybot.RegisterAdapterType("cursor", func(id string, config map[string]interface{}) (mybot.Adapter, error) {
@@ -115,8 +120,21 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- mybot.Message) error
 func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 	// 为每个 channel 准备独立工作目录，并将附件写入其中，方便 Cursor 在本地工作区访问
 	workdir := a.workdirForChannel(msg.Channel, msg.UserID)
+	workdirExisted := true
+	if _, err := os.Stat(workdir); err != nil {
+		if os.IsNotExist(err) {
+			workdirExisted = false
+		}
+	}
 	if err := os.MkdirAll(workdir, 0755); err != nil {
 		slog.Error("Cursor adapter create workdir failed", "channel", msg.Channel, "workdir", workdir, "err", err)
+	}
+	// 首次创建 workdir 时，将内嵌的规则模板拷贝到 workdir/.cursor/，不覆盖已有文件
+	if !workdirExisted {
+		slog.Info("Cursor adapter copy rules template", "workdir", workdir)
+		if err := copyCursorRulesTemplate(workdir); err != nil {
+			slog.Error("Cursor adapter copy rules template failed", "workdir", workdir, "err", err)
+		}
 	}
 	files, err := a.ensureFilesInDirectory(ctx, workdir, msg.Files)
 	if err != nil {
@@ -291,6 +309,40 @@ func sanitizePathSegment(s string) string {
 	s = strings.ReplaceAll(s, "\\", "_")
 	s = strings.ReplaceAll(s, "..", "_")
 	return strings.TrimSpace(s)
+}
+
+const rulesTemplatePrefix = "rules_template/"
+
+// copyCursorRulesTemplate 将内嵌的 rules_template 拷贝到 workdir/.cursor/，已存在的文件不覆盖。
+func copyCursorRulesTemplate(workdir string) error {
+	dotCursor := filepath.Join(workdir, ".cursor")
+	return fs.WalkDir(cursorRulesTemplate, "rules_template", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(path, rulesTemplatePrefix) {
+			return nil
+		}
+		rel := path[len(rulesTemplatePrefix):]
+		if rel == "" {
+			return nil
+		}
+		dest := filepath.Join(dotCursor, filepath.FromSlash(rel))
+		if d.IsDir() {
+			return os.MkdirAll(dest, 0755)
+		}
+		if _, err := os.Stat(dest); err == nil {
+			return nil // 已存在，不覆盖
+		}
+		data, err := fs.ReadFile(cursorRulesTemplate, path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(dest, data, 0644)
+	})
 }
 
 // ensureFilesInDirectory 将消息中的附件复制到 workdir/uploads 下，并返回新的 file:// URL 列表
