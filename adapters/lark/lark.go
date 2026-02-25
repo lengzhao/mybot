@@ -21,6 +21,7 @@ import (
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkapplication "github.com/larksuite/oapi-sdk-go/v3/service/application/v6"
+	larkcontact "github.com/larksuite/oapi-sdk-go/v3/service/contact/v3"
 	larkdrive "github.com/larksuite/oapi-sdk-go/v3/service/drive/v1"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
@@ -218,6 +219,62 @@ func (a *Adapter) addChatToWhitelist(chatID string) error {
 	return a.db.Save(&entry).Error
 }
 
+// getLarkUserName 通过通讯录 API 获取用户昵称/姓名，用于群聊场景下标识发送者。失败或无权限时返回空字符串。
+func (a *Adapter) getLarkUserName(ctx context.Context, userID, userIdType string) string {
+	if a.apiClient == nil || userID == "" || userIdType == "" {
+		return ""
+	}
+	req := larkcontact.NewGetUserReqBuilder().
+		UserId(userID).
+		UserIdType(userIdType).
+		Build()
+	resp, err := a.apiClient.Contact.V3.User.Get(ctx, req)
+	if err != nil {
+		slog.Debug("lark: get user info failed", "user_id", userID, "err", err)
+		return ""
+	}
+	if !resp.Success() || resp.Data == nil || resp.Data.User == nil {
+		return ""
+	}
+	u := resp.Data.User
+	if u.Name != nil && *u.Name != "" {
+		return *u.Name
+	}
+	if u.Nickname != nil && *u.Nickname != "" {
+		return *u.Nickname
+	}
+	if u.EnName != nil && *u.EnName != "" {
+		return *u.EnName
+	}
+	return ""
+}
+
+// buildLarkMessageContent 组装发给下游的统一内容格式：发送人、消息、相关信息（如有）。
+// mentions 为 @ 提及列表，每项含 "key"（如 @_user_1）、"name"。
+func buildLarkMessageContent(senderLabel, body string, mentions []map[string]interface{}) string {
+	var b strings.Builder
+	b.WriteString("发送人：" + senderLabel + "\n")
+	b.WriteString("消息：" + body)
+	if len(mentions) > 0 {
+		var parts []string
+		for _, m := range mentions {
+			name, _ := m["name"].(string)
+			key, _ := m["key"].(string)
+			if key != "" {
+				if name != "" {
+					parts = append(parts, key+"："+name)
+				} else {
+					parts = append(parts, key)
+				}
+			}
+		}
+		if len(parts) > 0 {
+			b.WriteString("\n相关信息：" + strings.Join(parts, "；"))
+		}
+	}
+	return b.String()
+}
+
 // handleAdminCommand 处理管理员在 Lark 中发送的管理指令。
 // 当前支持：
 // - "#allow"：将当前会话加入白名单。
@@ -278,6 +335,65 @@ func (a *Adapter) sendText(ctx context.Context, chatID, text string) {
 // MessageText Lark 文本消息结构
 type MessageText struct {
 	Text string `json:"text"`
+}
+
+// MessagePost 飞书富文本消息 content 结构（接收用），见 https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/im-v1/message/events/message_content
+// 可能是 { "title", "content" } 或 { "post": { "zh_cn": { "title", "content" } } }
+type MessagePost struct {
+	Title   string            `json:"title,omitempty"`
+	Content [][]MessagePostEl `json:"content,omitempty"`
+	Post    *struct {
+		ZhCN *struct {
+			Title   string            `json:"title,omitempty"`
+			Content [][]MessagePostEl `json:"content,omitempty"`
+		} `json:"zh_cn,omitempty"`
+	} `json:"post,omitempty"`
+}
+
+// MessagePostEl 富文本一行内的一个元素（text / a / at / img 等）
+type MessagePostEl struct {
+	Tag      string `json:"tag"`
+	Text     string `json:"text,omitempty"`
+	UserName string `json:"user_name,omitempty"`
+}
+
+// extractPlainTextFromPost 从富文本 post 中提取纯文本（按行拼接，用于与 text 消息统一处理）
+// 兼容 content 为 { "title", "content" } 或 { "post": { "zh_cn": { "title", "content" } } }
+func extractPlainTextFromPost(post *MessagePost) string {
+	if post == nil {
+		return ""
+	}
+	title := post.Title
+	content := post.Content
+	if post.Post != nil && post.Post.ZhCN != nil {
+		title = post.Post.ZhCN.Title
+		content = post.Post.ZhCN.Content
+	}
+	var lines []string
+	for _, row := range content {
+		var parts []string
+		for _, el := range row {
+			switch el.Tag {
+			case "text", "a":
+				if el.Text != "" {
+					parts = append(parts, el.Text)
+				}
+			case "at":
+				if el.UserName != "" {
+					parts = append(parts, "@"+el.UserName)
+				} else {
+					parts = append(parts, "@")
+				}
+			}
+		}
+		if len(parts) > 0 {
+			lines = append(lines, strings.Join(parts, ""))
+		}
+	}
+	if title != "" {
+		lines = append([]string{title}, lines...)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // NewAdapter 创建 Lark 适配器
@@ -371,15 +487,19 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 	msgType := larkcore.StringValue(msg.MessageType)
 	chatID := larkcore.StringValue(msg.ChatId)
 	userID := ""
+	larkUserIdType := ""
 	if message.Event.Sender != nil && message.Event.Sender.SenderId != nil {
 		sid := message.Event.Sender.SenderId
 		// 优先使用 UserId，其次 OpenId，最后 UnionId，保证能拿到一个稳定的用户标识
 		if sid.UserId != nil && larkcore.StringValue(sid.UserId) != "" {
 			userID = larkcore.StringValue(sid.UserId)
+			larkUserIdType = larkcontact.UserIdTypeGetUserUserId
 		} else if sid.OpenId != nil && larkcore.StringValue(sid.OpenId) != "" {
 			userID = larkcore.StringValue(sid.OpenId)
+			larkUserIdType = larkcontact.UserIdTypeGetUserOpenId
 		} else if sid.UnionId != nil && larkcore.StringValue(sid.UnionId) != "" {
 			userID = larkcore.StringValue(sid.UnionId)
+			larkUserIdType = larkcontact.UserIdTypeGetUserUnionId
 		}
 	}
 
@@ -392,6 +512,47 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 		"lark_msg_type":  msgType,
 		"lark_chat_type": larkcore.StringValue(msg.ChatType),
 	}
+	if larkUserIdType != "" {
+		extra["lark_user_id_type"] = larkUserIdType
+		if name := a.getLarkUserName(ctx, userID, larkUserIdType); name != "" {
+			extra["sender_name"] = name
+		}
+	}
+	// 将消息中 @ 提及的用户列表写入 extra，便于下游按 key（如 @_user_1）解析身份
+	if len(msg.Mentions) > 0 {
+		mentionsList := make([]map[string]interface{}, 0, len(msg.Mentions))
+		for _, m := range msg.Mentions {
+			if m == nil {
+				continue
+			}
+			key := ""
+			if m.Key != nil {
+				key = *m.Key
+			}
+			mentionID := ""
+			if m.Id != nil {
+				if m.Id.OpenId != nil && *m.Id.OpenId != "" {
+					mentionID = *m.Id.OpenId
+				} else if m.Id.UserId != nil && *m.Id.UserId != "" {
+					mentionID = *m.Id.UserId
+				} else if m.Id.UnionId != nil && *m.Id.UnionId != "" {
+					mentionID = *m.Id.UnionId
+				}
+			}
+			name := ""
+			if m.Name != nil {
+				name = *m.Name
+			}
+			mentionsList = append(mentionsList, map[string]interface{}{
+				"key":  key,
+				"id":   mentionID,
+				"name": name,
+			})
+		}
+		if len(mentionsList) > 0 {
+			extra["mentions"] = mentionsList
+		}
+	}
 
 	switch msgType {
 	case larkim.MsgTypeText:
@@ -400,34 +561,19 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 			slog.Error("lark: failed to unmarshal text content", "err", err)
 			return nil
 		}
+		return a.handleTextMessage(ctx, msg, userID, chatID, extra, textMsg.Text)
 
-		// 优先处理管理员指令（不会转发到调度中心）
-		if a.handleAdminCommand(ctx, userID, chatID, textMsg.Text) {
+	case larkim.MsgTypePost:
+		postMsg := new(MessagePost)
+		if err := json.Unmarshal([]byte(larkcore.StringValue(msg.Content)), postMsg); err != nil {
+			slog.Error("lark: failed to unmarshal post content", "err", err)
 			return nil
 		}
-
-		// 非白名单用户 / 会话先拦截，不转发给调度中心。
-		if !a.isAllowed(userID, chatID) {
-			a.sendText(ctx, chatID, "你还未被授权使用此机器人，请联系管理员在当前会话发送 #allow 进行授权。")
+		plainText := extractPlainTextFromPost(postMsg)
+		if plainText == "" {
 			return nil
 		}
-
-		mbMsg := mybot.Message{
-			ID:            larkcore.StringValue(msg.MessageId),
-			SourceAdapter: a.GetID(),
-			TargetAdapter: a.defaultTarget,
-			UserID:        userID,
-			Channel:       chatID,
-			Content:       textMsg.Text,
-			Type:          mybot.TypeText,
-			Timestamp:     time.Now().UnixMilli(),
-			Extra:         extra,
-		}
-		select {
-		case a.inbound <- mbMsg:
-		case <-ctx.Done():
-		}
-		return nil
+		return a.handleTextMessage(ctx, msg, userID, chatID, extra, plainText)
 
 	case larkim.MsgTypeFile:
 		fileMsg := new(larkim.MessageFile)
@@ -464,9 +610,43 @@ func (a *Adapter) handleMessage(ctx context.Context, message *larkim.P2MessageRe
 		}
 		a.handleMessageResource(ctx, msg, userID, chatID, extra, mediaMsg.FileKey, "file", "视频")
 		return nil
+	default:
+		slog.Warn("lark: unsupported message type", "msg_type", msgType)
+		return nil
 	}
 
-	// 其他类型暂不处理
+}
+
+// handleTextMessage 对解析出的纯文本做权限校验并推送到调度中心（供 text / post 共用）
+func (a *Adapter) handleTextMessage(ctx context.Context, msg *larkim.EventMessage, userID, chatID string, extra map[string]interface{}, plainText string) error {
+	if a.handleAdminCommand(ctx, userID, chatID, plainText) {
+		return nil
+	}
+	if !a.isAllowed(userID, chatID) {
+		a.sendText(ctx, chatID, "你还未被授权使用此机器人，请联系管理员在当前会话发送 #allow 进行授权。")
+		return nil
+	}
+	senderLabel := userID
+	if sn, _ := extra["sender_name"].(string); sn != "" {
+		senderLabel = sn
+	}
+	mentions, _ := extra["mentions"].([]map[string]interface{})
+	content := buildLarkMessageContent(senderLabel, plainText, mentions)
+	mbMsg := mybot.Message{
+		ID:            larkcore.StringValue(msg.MessageId),
+		SourceAdapter: a.GetID(),
+		TargetAdapter: a.defaultTarget,
+		UserID:        userID,
+		Channel:       chatID,
+		Content:       content,
+		Type:          mybot.TypeText,
+		Timestamp:     time.Now().UnixMilli(),
+		Extra:         extra,
+	}
+	select {
+	case a.inbound <- mbMsg:
+	case <-ctx.Done():
+	}
 	return nil
 }
 
@@ -486,10 +666,16 @@ func (a *Adapter) handleMessageResource(ctx context.Context, msg *larkim.EventMe
 		a.sendText(ctx, chatID, contentLabel+"下载失败，请稍后重试。")
 		return
 	}
-	content := "用户发送了" + contentLabel
+	body := "用户发送了" + contentLabel
 	if len(files) > 0 && files[0].Name != "" {
-		content = "用户发送了" + contentLabel + ": " + files[0].Name
+		body = "用户发送了" + contentLabel + ": " + files[0].Name
 	}
+	senderLabel := userID
+	if sn, _ := extra["sender_name"].(string); sn != "" {
+		senderLabel = sn
+	}
+	mentions, _ := extra["mentions"].([]map[string]interface{})
+	content := buildLarkMessageContent(senderLabel, body, mentions)
 	mbMsg := mybot.Message{
 		ID:            larkcore.StringValue(msg.MessageId),
 		SourceAdapter: a.GetID(),
