@@ -77,13 +77,19 @@ func init() {
 			return nil, err
 		}
 
+		heartbeatEnabled := true
+		if v, ok := config["heartbeat_enabled"].(bool); ok {
+			heartbeatEnabled = v
+		}
+
 		return &Adapter{
-			id:            id,
-			defaultTarget: defaultTarget,
-			cursorBin:     bin,
-			directory:     adapterDir,
-			sessions:      make(map[string]string),
-			args:          cliArgs,
+			id:               id,
+			defaultTarget:    defaultTarget,
+			cursorBin:        bin,
+			directory:        adapterDir,
+			heartbeatEnabled: heartbeatEnabled,
+			sessions:         make(map[string]string),
+			args:             cliArgs,
 		}, nil
 	})
 }
@@ -91,10 +97,11 @@ func init() {
 // Adapter 通过 Cursor Agent CLI 调用 Cursor，适合作为本地代码助手。
 // 设计：每条消息以一次性子进程方式调用 `agent`，按 channel 复用 chatId 以支持会话。
 type Adapter struct {
-	id            string
-	defaultTarget string
-	cursorBin     string
-	directory     string
+	id               string
+	defaultTarget    string
+	cursorBin        string
+	directory        string
+	heartbeatEnabled bool // 是否参与全局心跳，由配置 heartbeat_enabled 控制，默认 true
 
 	inbound chan<- mybot.Message
 	mu      sync.RWMutex
@@ -192,6 +199,10 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 		Channel:       msg.Channel,
 	}
 
+	if err := mybot.AppendExchange(workdir, msg, reply); err != nil {
+		slog.Debug("Cursor adapter append conversation log failed", "workdir", workdir, "err", err)
+	}
+
 	select {
 	case a.inbound <- reply:
 	case <-ctx.Done():
@@ -202,6 +213,40 @@ func (a *Adapter) ReceiveMessage(ctx context.Context, msg mybot.Message) error {
 
 func (a *Adapter) Status() string {
 	return "online"
+}
+
+// HeartbeatEnabled 实现 HeartbeatHandler：是否参与全局心跳，由配置 heartbeat_enabled 控制，默认 true
+func (a *Adapter) HeartbeatEnabled() bool {
+	return a.heartbeatEnabled
+}
+
+// OnHeartbeat 实现 HeartbeatHandler：全局心跳触发时向 inbound 推送各 channel 的心跳消息，由 ReceiveMessage 统一处理
+func (a *Adapter) OnHeartbeat(ctx context.Context, opts mybot.HeartbeatOptions) error {
+	now := time.Now()
+	nowMs := now.UnixMilli()
+
+	for _, ch := range opts.TriggerChannels {
+		if ch.Channel == "" {
+			continue
+		}
+		msg := mybot.Message{
+			ID:            fmt.Sprintf("heartbeat-%d", now.Unix()),
+			SourceAdapter: "heartbeat",
+			TargetAdapter: a.GetID(),
+			Type:          mybot.TypeEvent,
+			Content:       opts.Content,
+			Timestamp:     nowMs,
+			Extra:         map[string]interface{}{"trigger": "heartbeat"},
+			Channel:       ch.Channel,
+			UserID:        mybot.HeartbeatUserID,
+		}
+		select {
+		case a.inbound <- msg:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // getOrCreateChatID 为指定 channel 获取或创建对应的 chatId。

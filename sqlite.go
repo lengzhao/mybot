@@ -35,6 +35,35 @@ func (MessageModel) TableName() string {
 	return "messages"
 }
 
+// HeartbeatStateModel 心跳状态表（单行，与消息日志分离）
+type HeartbeatStateModel struct {
+	ID            string `gorm:"primaryKey"` // 固定为 "default"
+	LastTriggerAt int64  `json:"last_trigger_at"`
+	TriggerCount  int64  `json:"trigger_count"`
+	NextDueAt     int64  `json:"next_due_at"`
+	Enabled       bool   `json:"enabled"`
+	UpdatedAt     int64  `json:"updated_at"`
+}
+
+func (HeartbeatStateModel) TableName() string {
+	return "heartbeat_state"
+}
+
+// HeartbeatChannelStateModel 各 channel 的心跳调度状态（历史对话 channel 按 due 发送，支持延长间隔与取消）
+type HeartbeatChannelStateModel struct {
+	Channel       string `gorm:"primaryKey" json:"channel"`
+	UserID        string `gorm:"primaryKey" json:"user_id"`
+	LastTriggerAt int64  `json:"last_trigger_at"`
+	NextDueAt     int64  `json:"next_due_at"`
+	IntervalSec   int    `json:"interval_sec"`
+	CancelledAt   int64  `json:"cancelled_at"` // >0 表示已取消心跳，有新消息时清零恢复
+	UpdatedAt     int64  `json:"updated_at"`
+}
+
+func (HeartbeatChannelStateModel) TableName() string {
+	return "heartbeat_channel_state"
+}
+
 // SQLiteStore SQLite存储实现
 type SQLiteStore struct {
 	db          *gorm.DB
@@ -86,7 +115,7 @@ func (s *SQLiteStore) Start() error {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
 	// 自动迁移表结构
-	if err := s.db.AutoMigrate(&MessageModel{}); err != nil {
+	if err := s.db.AutoMigrate(&MessageModel{}, &HeartbeatStateModel{}, &HeartbeatChannelStateModel{}); err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
 	}
 
@@ -320,6 +349,204 @@ func (s *SQLiteStore) GetStats() (Stats, error) {
 	}
 
 	return stats, nil
+}
+
+const heartbeatStateID = "default"
+
+// GetHeartbeatState 获取心跳状态（实现 HeartbeatStateStore）
+func (s *SQLiteStore) GetHeartbeatState() (*HeartbeatState, error) {
+	if !s.enabled {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var m HeartbeatStateModel
+	err := s.db.Where("id = ?", heartbeatStateID).First(&m).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return &HeartbeatState{Enabled: true}, nil
+		}
+		return nil, fmt.Errorf("failed to get heartbeat state: %w", err)
+	}
+	return &HeartbeatState{
+		LastTriggerAt: m.LastTriggerAt,
+		TriggerCount:  m.TriggerCount,
+		NextDueAt:     m.NextDueAt,
+		Enabled:       m.Enabled,
+	}, nil
+}
+
+// UpdateHeartbeatState 更新心跳状态（实现 HeartbeatStateStore）
+func (s *SQLiteStore) UpdateHeartbeatState(state HeartbeatState) error {
+	if !s.enabled {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now().UnixMilli()
+	m := HeartbeatStateModel{
+		ID:            heartbeatStateID,
+		LastTriggerAt: state.LastTriggerAt,
+		TriggerCount:  state.TriggerCount,
+		NextDueAt:     state.NextDueAt,
+		Enabled:       state.Enabled,
+		UpdatedAt:     now,
+	}
+	return s.db.Save(&m).Error
+}
+
+// GetActiveChannels 返回有历史对话的 channel 列表（排除心跳来源，用于按 channel 发送心跳）
+func (s *SQLiteStore) GetActiveChannels(sinceTs int64) ([]ChannelInfo, error) {
+	if !s.enabled {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	query := s.db.Model(&MessageModel{}).
+		Select("DISTINCT channel, user_id").
+		Where("source_adapter != ?", "heartbeat").
+		Where("channel != ?", "")
+	if sinceTs > 0 {
+		query = query.Where("timestamp >= ?", sinceTs)
+	}
+	var rows []struct {
+		Channel string
+		UserID  string
+	}
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("get active channels: %w", err)
+	}
+	out := make([]ChannelInfo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ChannelInfo{Channel: r.Channel, UserID: r.UserID})
+	}
+	return out, nil
+}
+
+// GetActiveChannelsForTarget 返回指定 target_adapter 下有历史对话的 channel（消息投递到该 adapter 的 channel），用于按 adapter 区分心跳
+func (s *SQLiteStore) GetActiveChannelsForTarget(targetAdapter string, sinceTs int64) ([]ChannelInfo, error) {
+	if !s.enabled || targetAdapter == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	query := s.db.Model(&MessageModel{}).
+		Select("DISTINCT channel, user_id").
+		Where("target_adapter = ?", targetAdapter).
+		Where("source_adapter != ?", "heartbeat").
+		Where("channel != ?", "")
+	if sinceTs > 0 {
+		query = query.Where("timestamp >= ?", sinceTs)
+	}
+	var rows []struct {
+		Channel string
+		UserID  string
+	}
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("get active channels for target: %w", err)
+	}
+	out := make([]ChannelInfo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ChannelInfo{Channel: r.Channel, UserID: r.UserID})
+	}
+	return out, nil
+}
+
+// GetChannelHeartbeatState 获取某 channel 的心跳调度状态
+func (s *SQLiteStore) GetChannelHeartbeatState(channel, userID string) (*ChannelHeartbeatState, error) {
+	if !s.enabled {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var m HeartbeatChannelStateModel
+	err := s.db.Where("channel = ? AND user_id = ?", channel, userID).First(&m).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &ChannelHeartbeatState{
+		Channel:       m.Channel,
+		UserID:        m.UserID,
+		LastTriggerAt: m.LastTriggerAt,
+		NextDueAt:     m.NextDueAt,
+		IntervalSec:   m.IntervalSec,
+		CancelledAt:   m.CancelledAt,
+	}, nil
+}
+
+// UpsertChannelHeartbeatState 插入或更新 channel 心跳状态
+func (s *SQLiteStore) UpsertChannelHeartbeatState(state ChannelHeartbeatState) error {
+	if !s.enabled {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now().UnixMilli()
+	m := HeartbeatChannelStateModel{
+		Channel:       state.Channel,
+		UserID:        state.UserID,
+		LastTriggerAt: state.LastTriggerAt,
+		NextDueAt:     state.NextDueAt,
+		IntervalSec:   state.IntervalSec,
+		CancelledAt:   state.CancelledAt,
+		UpdatedAt:     now,
+	}
+	return s.db.Save(&m).Error
+}
+
+// MaxHeartbeatIntervalSec 单 channel 心跳间隔上限，超过后仍无处理则取消该 channel 心跳
+const MaxHeartbeatIntervalSec = 86400 * 7 // 7 天
+
+// LengthenChannelInterval 将该 channel 的下次间隔延长（乘 multiplier），有上限；已达上限则取消该 channel 心跳
+func (s *SQLiteStore) LengthenChannelInterval(channel, userID string, multiplier float64) error {
+	if !s.enabled {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var m HeartbeatChannelStateModel
+	err := s.db.Where("channel = ? AND user_id = ?", channel, userID).First(&m).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil
+		}
+		return err
+	}
+	// 已达最长间隔仍无处理，视为 channel 可能已无用，取消心跳
+	if m.IntervalSec >= MaxHeartbeatIntervalSec {
+		m.CancelledAt = time.Now().UnixMilli()
+		m.UpdatedAt = m.CancelledAt
+		return s.db.Save(&m).Error
+	}
+	newInterval := int(float64(m.IntervalSec) * multiplier)
+	if newInterval <= 0 {
+		newInterval = m.IntervalSec * 2
+	}
+	if newInterval > MaxHeartbeatIntervalSec {
+		newInterval = MaxHeartbeatIntervalSec
+	}
+	m.IntervalSec = newInterval
+	m.NextDueAt = time.Now().UnixMilli() + int64(newInterval)*1000
+	m.UpdatedAt = time.Now().UnixMilli()
+	return s.db.Save(&m).Error
+}
+
+// UncancelChannelHeartbeat 该 channel 有新用户消息时恢复心跳（清除 cancelled_at）
+func (s *SQLiteStore) UncancelChannelHeartbeat(channel, userID string) error {
+	if !s.enabled {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.db.Model(&HeartbeatChannelStateModel{}).
+		Where("channel = ? AND user_id = ? AND cancelled_at > 0", channel, userID).
+		Updates(map[string]interface{}{
+			"cancelled_at": 0,
+			"updated_at":   time.Now().UnixMilli(),
+		}).Error
 }
 
 // cleanupLoop 自动清理循环

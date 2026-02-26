@@ -1,5 +1,6 @@
 # MyBot 配置文件示例
 # 说明：
+# - 各配置项默认不注释，仅通过各块/各 adapter 的 enabled 控制是否启用
 # - system.work_dir 为工作目录，主程序会为每个 adapter 注入 adapter_dir = work_dir/adapters/{adapter_id}
 # - 支持文件收发的 adapter（如 opencode、lark、webchat）会使用 adapter_dir 存放上传/生成的文件
 # - default_adapter：无明确目标且无标签匹配时，消息投递到该适配器
@@ -10,30 +11,30 @@
 # 推荐最小配置（全能助手：Lark/Web + Smart Router + Cursor + Cron）：启用 lark、webchat、smart_router、cursor、cron；入口 default_target 指 smart_router；smart_router default_target 指 cursor；执行端不设 default_target 或仅兜底
 system:
   trace_enabled: true
-  # work_dir: "."           # 主程序工作目录，空则用进程 cwd；各 adapter 的 adapter_dir = work_dir/adapters/{adapter_id}
-  default_adapter: "smart_router_1"  # 可选：设为 smart_router 做智能路由；或直接指定具体 adapter 如 echo.echo_service
+  work_dir: "."
+  default_adapter: "smart_router_1"
+  max_hops: 20
+  log_level: "info"
+  log_file: ""
 
-  # 防循环：消息最大转发跳数，超过则丢弃；默认 20，0 表示不限制
-  # max_hops: 20
+  admin:
+    enabled: false
+    port: "8081"
+    config_path: ""
+    cron_api_urls: []
+    log_path: ""
 
-  # 日志：不配或 log_file 为空则输出到 stdout
-  # log_level: "info"       # debug / info / warn / error，空则 info
-  # log_file: ""            # 日志文件路径，空则 stdout；相对路径相对于配置文件所在目录
+  state_store:
+    enabled: false
+    db_path: "./data/mybot.db"
+    auto_cleanup: true
+    cleanup_days: 30
 
-  # 管理后台：提供会话/消息查询、配置查看、Cron、日志等（需同时启用 state_store）
-  # admin:
-  #   enabled: false        # 是否启用管理服务
-  #   port: "8081"          # 管理服务端口，默认 8081；启用后启动时自动打开管理页面
-  #   config_path: ""       # 配置文件路径，供管理页只读展示（通常与主程序加载的 config 一致）
-  #   cron_api_urls: []     # Cron 适配器 API 地址，如 ["http://127.0.0.1:9090"]，供管理页展示任务
-  #   log_path: ""          # 日志文件路径，供管理页查看（与 log_file 一致即可）
-
-  # 状态存储：持久化消息等，供管理后台查询
-  # state_store:
-  #   enabled: false
-  #   db_path: "./data/mybot.db"
-  #   auto_cleanup: true    # 是否自动清理旧数据
-  #   cleanup_days: 30      # 清理多少天前的数据
+  heartbeat:
+    enabled: false
+    interval_sec: 300
+    min_interval_sec: 60
+    content: ""
 
 adapters:
   # Smart Router：作为 default_adapter 时，根据 rules 识别消息并转发到其他 adapter；target 填目标 adapter 的 GetID（如 echo.echo_service）
@@ -61,73 +62,65 @@ adapters:
   - id: "console_1"
     type: "console"
     enabled: true
-    # default_target: "deepseek_chat"  # 控制台输入的消息默认发送到该适配器
+    default_target: ""
 
   - id: "echo_service"
     type: "echo"
     enabled: true
-    # default_target: "console_1"      # echo 的回复默认发送到该适配器
+    default_target: ""
 
   - id: "deepseek_chat"
     type: "deepseek"
     enabled: false
-    # default_target: "console_1"      # deepseek 的回复默认发送到该适配器
+    default_target: ""
     api_key: "YOUR_DEEPSEEK_API_KEY"
     model: "deepseek-chat"
-    # base_url: "https://api.deepseek.com/v1"
+    base_url: ""
 
-  # Cursor 适配器：通过 Cursor Agent CLI 调用 Cursor，本地已配置好的 workspace/model/mode 等均复用 CLI 自身配置；
-  # 会按 channel 维度自动 create-chat 并用 --resume 复用会话
   - id: "cursor_1"
     type: "cursor"
     enabled: false
-    # default_target: "console_1"      # cursor 的回复默认发送到该适配器
-    # cursor_bin: "agent"              # 可选，默认 "agent"
-    # args: ["-f", "--approve-mcps"]   # 传给 Cursor CLI 的全局参数，位于 command 前，如：agent -f --approve-mcps agent "prompt"
+    default_target: ""
+    cursor_bin: "agent"
+    args: []
+    heartbeat_enabled: true
 
-  # OpenCode 适配器：工作目录使用 adapter_dir（由主程序注入）；不填 base_url 时自启动
   - id: "opencode_1"
     type: "opencode"
     enabled: false
-    # default_target: "console_1"     # opencode 的回复默认发送到该适配器
-    # base_url: "http://localhost:3000"
-    # opencode_bin: "opencode"
-    # api_key: ""
-    # allow_execute: true  # 为 true（默认）时允许写文件与执行命令（如写并运行 Python），设为 false 则仅对话
+    default_target: ""
+    base_url: ""
+    opencode_bin: "opencode"
+    api_key: ""
+    allow_execute: true
 
-  # Public OpenCode 适配器：全局单 session、不区分用户，使用 opencode-sdk-go；不配 base_url 时自动启动 opencode serve
   - id: "public_opencode_1"
     type: "public_opencode"
     enabled: false
-    # base_url: "http://127.0.0.1:4096" # 可选。不填则在 Start 时自启动 opencode serve（需安装 opencode CLI）
-    # default_target: "webchat"          # 回复默认发往的适配器
-    # api_key: ""                        # 可选，Bearer 认证
-    # opencode_bin: "opencode"           # 自启动时使用的可执行文件名，默认 "opencode"
-    # auto_permission: "once"            # 可选。订阅 event，收到权限请求时自动响应；每次授权会写入 logs/public_session.log
+    base_url: ""
+    default_target: ""
+    api_key: ""
+    opencode_bin: "opencode"
+    auto_permission: ""
 
-  # Lark 适配器：接入飞书/Lark 机器人
-  # 说明：adapter_dir 由主程序自动注入，用于存放用户发送的文件（下载到本地后供下游使用）
-  # 回复中的附件：需配置 drive_parent_node（云文档某文件夹 token），否则仅发送文本
   - id: "lark_bot"
     type: "lark"
     enabled: false
-    # default_target: "deepseek_chat" # lark 收到的消息默认发送到该适配器
+    default_target: ""
     app_id: "YOUR_LARK_APP_ID"
     app_secret: "YOUR_LARK_APP_SECRET"
-    # drive_parent_node: "fldxxx"     # 可选。云文档父目录 token，回复时上传附件并发送文件消息；不设则只发文本
+    drive_parent_node: ""
 
-  # Cron 适配器：定时任务；支持 Message 与 HTTP API 创建，触发后通过 inbound 投递到 payload.target_adapter 并回源（与其它 adapter 一致，无需主程序特殊处理）
   - id: "cron_1"
     type: "cron"
     enabled: false
-    # default_target: "lark_bot"       # 创建任务的确认回复发往的 adapter，不设则回源
-    # cron_db_path: ""                # 可选，不设则用 adapter_dir/cron.db
-    # api_addr: "127.0.0.1:9090"     # 可选，开启 HTTP API 时填写监听地址（如 :9090 或 127.0.0.1:9090）
-    # api_token: ""                   # 可选，API 鉴权 Bearer / X-API-Key
+    default_target: ""
+    cron_db_path: ""
+    api_addr: ""
+    api_token: ""
 
-  # WebChat 适配器：提供基于 Web 的聊天界面；支持上传附件，回复中的文件会显示下载链接
   - id: "webchat"
     type: "webchat"
     enabled: true
-    # default_target: "echo"          # webchat 的回复默认发送到该适配器（如 opencode_1）
-    port: 8080                  # HTTP/WebSocket 服务端口
+    default_target: ""
+    port: 8080

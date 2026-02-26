@@ -129,6 +129,16 @@ func (p *program) run() {
 	p.adminService = adminService
 	p.store = store
 
+	// 启动 StateStore 并注入 Dispatcher（需在 Start 前完成，以便心跳可读写状态）
+	if store != nil {
+		if err := store.Start(); err != nil {
+			slog.Error("Failed to start state store", "err", err)
+			return
+		}
+		dispatcher.SetStateStore(store)
+	}
+	dispatcher.SetHeartbeatConfig(cfg.System.Heartbeat)
+
 	// 启动管理服务
 	if adminService != nil {
 		if err := adminService.Start(ctx); err != nil {
@@ -143,10 +153,6 @@ func (p *program) run() {
 		slog.Error("Failed to start dispatcher", "err", err)
 		return
 	}
-	if store != nil {
-		store.Start()
-	}
-	dispatcher.SetStateStore(store)
 
 	slog.Info("Mybot started as service", "workdir", workDir)
 }

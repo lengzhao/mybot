@@ -16,13 +16,22 @@ type Config struct {
 
 type SystemConfig struct {
 	TraceEnabled   bool             `yaml:"trace_enabled"`
-	WorkDir        string           `yaml:"work_dir"`        // 主程序工作目录，空则使用「配置文件所在目录/workdir」；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
-	DefaultAdapter string           `yaml:"default_adapter"` // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
-	LogLevel       string           `yaml:"log_level"`       // 日志级别：debug/info/warn/error，空则 info
-	LogFile        string           `yaml:"log_file"`        // 日志文件路径，空则输出到 stdout
-	StateStore     StateStoreConfig `yaml:"state_store"`     // 状态存储配置
-	Admin          AdminConfig      `yaml:"admin"`           // 管理服务配置
-	MaxHops        int              `yaml:"max_hops"`        // 消息最大转发跳数，防循环；默认 20，0 表示不限制
+	WorkDir        string           `yaml:"work_dir"`         // 主程序工作目录，空则使用「配置文件所在目录/workdir」；各 adapter 默认目录为 work_dir/adapters/{adapter_id}
+	DefaultAdapter string           `yaml:"default_adapter"`  // 路由兜底：无 Target 且无 Tags 或标签无匹配时投递的 adapter id
+	LogLevel       string           `yaml:"log_level"`        // 日志级别：debug/info/warn/error，空则 info
+	LogFile        string           `yaml:"log_file"`         // 日志文件路径，空则输出到 stdout
+	StateStore     StateStoreConfig `yaml:"state_store"`      // 状态存储配置
+	Admin          AdminConfig      `yaml:"admin"`            // 管理服务配置
+	MaxHops        int              `yaml:"max_hops"`          // 消息最大转发跳数，防循环；默认 20，0 表示不限制
+	Heartbeat      HeartbeatConfig `yaml:"heartbeat"`        // 心跳配置：周期触发自主轮次
+}
+
+// HeartbeatConfig 心跳配置（内置于 Dispatcher）
+type HeartbeatConfig struct {
+	Enabled        bool   `yaml:"enabled"`           // 是否启用心跳
+	IntervalSec    int    `yaml:"interval_sec"`       // 触发间隔（秒），如 300 表示每 5 分钟判断一次
+	MinIntervalSec int    `yaml:"min_interval_sec"`    // 最小间隔（秒），Constitution：两次触发间隔不得小于此值，0 表示不限制
+	Content        string `yaml:"content"`            // 心跳消息的指令内容，空则使用内置默认文案
 }
 
 // AdminConfig 管理服务配置

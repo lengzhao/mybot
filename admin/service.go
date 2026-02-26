@@ -89,6 +89,8 @@ func (s *Service) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/cron/adapters", s.handleCronAdapters)
 	mux.HandleFunc("/api/cron/jobs", s.handleCronJobsProxy)
 	mux.HandleFunc("/api/logs", s.handleGetLogs)
+	mux.HandleFunc("/api/heartbeat", s.handleHeartbeatState)
+	mux.HandleFunc("/api/heartbeat/feedback", s.handleHeartbeatFeedback)
 	mux.HandleFunc("/health", s.handleHealth)
 
 	s.server = &http.Server{
@@ -250,6 +252,85 @@ func (s *Service) handleGetStats(rw http.ResponseWriter, r *http.Request) {
 
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(stats)
+}
+
+// handleHeartbeatState 处理心跳状态只读查询（供 Admin 展示）
+func (s *Service) handleHeartbeatState(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.stateStore == nil {
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]interface{}{
+			"available": false,
+			"reason":    "StateStore not available",
+		})
+		return
+	}
+	hs, ok := s.stateStore.(mybot.HeartbeatStateStore)
+	if !ok {
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]interface{}{
+			"available": false,
+			"reason":    "StateStore does not support heartbeat state",
+		})
+		return
+	}
+	state, err := hs.GetHeartbeatState()
+	if err != nil {
+		slog.Error("Failed to get heartbeat state", "err", err)
+		http.Error(rw, "Failed to get heartbeat state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]interface{}{
+		"available": true,
+		"state":     state,
+	})
+}
+
+// handleHeartbeatFeedback 处理「该 channel 本轮无处理」反馈，延长该 channel 下次心跳间隔
+func (s *Service) handleHeartbeatFeedback(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.stateStore == nil {
+		http.Error(rw, "StateStore not available", http.StatusServiceUnavailable)
+		return
+	}
+	hs, ok := s.stateStore.(mybot.HeartbeatStateStore)
+	if !ok {
+		http.Error(rw, "heartbeat state not supported", http.StatusNotImplemented)
+		return
+	}
+	var body struct {
+		Channel string  `json:"channel"`
+		UserID  string  `json:"user_id"`
+		NoWork  bool    `json:"no_work"`
+		Multiplier float64 `json:"multiplier"` // 可选，默认 2
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !body.NoWork || body.Channel == "" {
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]interface{}{"ok": false, "reason": "no_work must be true and channel required"})
+		return
+	}
+	mult := body.Multiplier
+	if mult <= 0 {
+		mult = 2
+	}
+	if err := hs.LengthenChannelInterval(body.Channel, body.UserID, mult); err != nil {
+		slog.Error("heartbeat feedback: lengthen interval failed", "channel", body.Channel, "err", err)
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]interface{}{"ok": true})
 }
 
 // handleHealth 处理健康检查

@@ -66,6 +66,46 @@ type Stats struct {
 	MessagesByType    map[string]int64 `json:"messages_by_type"`
 }
 
+// HeartbeatState 心跳状态（与消息日志分离，单独维护）
+type HeartbeatState struct {
+	LastTriggerAt int64 `json:"last_trigger_at"` // 上次触发时间 Unix 毫秒
+	TriggerCount  int64 `json:"trigger_count"`  // 累计触发次数
+	NextDueAt     int64 `json:"next_due_at"`     // 下次预计触发时间（可选）
+	Enabled       bool  `json:"enabled"`         // 是否启用
+}
+
+// ChannelInfo 有历史对话的 channel 标识（用于按 channel 发送心跳）
+type ChannelInfo struct {
+	Channel string `json:"channel"`
+	UserID  string `json:"user_id"`
+}
+
+// ChannelHeartbeatState 单个 channel 的心跳调度状态（用于「无处理则延长间隔」）
+type ChannelHeartbeatState struct {
+	Channel       string `json:"channel"`
+	UserID        string `json:"user_id"`
+	LastTriggerAt int64  `json:"last_trigger_at"`
+	NextDueAt     int64  `json:"next_due_at"`
+	IntervalSec   int    `json:"interval_sec"`
+	CancelledAt   int64  `json:"cancelled_at"` // 若 >0 表示已取消心跳（达到最长间隔仍无处理），有新用户消息时会恢复
+}
+
+// HeartbeatStateStore 心跳状态存储接口（可选，由 SQLiteStore 等实现）
+type HeartbeatStateStore interface {
+	GetHeartbeatState() (*HeartbeatState, error)
+	UpdateHeartbeatState(state HeartbeatState) error
+	// 历史对话 channel 列表（source_adapter != heartbeat）
+	GetActiveChannels(sinceTs int64) ([]ChannelInfo, error)
+	// 指定 target_adapter 下的历史 channel，用于按 adapter 区分心跳
+	GetActiveChannelsForTarget(targetAdapter string, sinceTs int64) ([]ChannelInfo, error)
+	GetChannelHeartbeatState(channel, userID string) (*ChannelHeartbeatState, error)
+	UpsertChannelHeartbeatState(state ChannelHeartbeatState) error
+	// 当该 channel 本轮无处理时调用，将下次间隔延长（乘 multiplier，有上限）；已达上限则取消该 channel 心跳
+	LengthenChannelInterval(channel, userID string, multiplier float64) error
+	// 该 channel 有新用户消息时调用，恢复已取消的心跳
+	UncancelChannelHeartbeat(channel, userID string) error
+}
+
 // File 消息附件
 // 约定：Message 中的 Files 默认应存于「处理该消息的 adapter 的 directory」下；
 // 能处理文件的 adapter 在接收消息时，应先把附件转存到自己的工作目录再处理。
@@ -119,4 +159,16 @@ type Adapter interface {
 type SourceAckAdapter interface {
 	// OnMessageDispatchedToTarget 当调度中心将消息投递给目标 adapter 时调用；source 可据此在原消息上做反馈（如加 👍）。
 	OnMessageDispatchedToTarget(ctx context.Context, msg Message, targetAdapterID string)
+}
+
+// HeartbeatOptions 全局心跳触发时传给各 adapter 的参数
+type HeartbeatOptions struct {
+	Content         string        // 心跳指令内容（可配置或默认）
+	TriggerChannels []ChannelInfo // 本轮要触发的 channel（默认 channel + 到期的历史 channel）
+}
+
+// HeartbeatHandler 可选接口：实现后会在全局心跳触发时被调用；HeartbeatEnabled 控制是否参与（如从配置读取，默认 true），OnHeartbeat 为处理逻辑
+type HeartbeatHandler interface {
+	HeartbeatEnabled() bool
+	OnHeartbeat(ctx context.Context, opts HeartbeatOptions) error
 }
